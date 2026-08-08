@@ -19,12 +19,6 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/**
- * Internal Firestore document key.
- *
- * Ini bukan Device ID.
- * Tidak dikirim oleh ESP32.
- */
 const READER_DOCUMENT = "registration-reader";
 
 interface RegisterScanBody {
@@ -39,29 +33,69 @@ interface RegisterScanBody {
   uptimeSeconds?: unknown;
 }
 
-type RegistrationResult =
+type ScanResult =
   | {
-      type: "success";
+      type: "registration_success";
 
       employeeName: string;
     }
   | {
-      type: "no_active_session";
-    }
-  | {
-      type: "duplicate";
+      type: "card_already_registered";
 
       employeeName: string | null;
     }
   | {
-      type: "invalid_session";
+      type: "employee_already_has_card";
     }
   | {
       type: "employee_not_found";
     }
   | {
-      type: "employee_already_has_card";
+      type: "invalid_session";
+    }
+  | {
+      type: "card_not_registered";
+    }
+  | {
+      type: "employee_inactive";
+
+      employeeName: string;
+    }
+  | {
+      type: "attendance_check_in";
+
+      employeeName: string;
+    }
+  | {
+      type: "attendance_check_out";
+
+      employeeName: string;
+    }
+  | {
+      type: "attendance_complete";
+
+      employeeName: string;
     };
+
+function getJakartaDateKey() {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Jakarta",
+
+    year: "numeric",
+
+    month: "2-digit",
+
+    day: "2-digit",
+  }).formatToParts(new Date());
+
+  const year = parts.find((part) => part.type === "year")?.value;
+
+  const month = parts.find((part) => part.type === "month")?.value;
+
+  const day = parts.find((part) => part.type === "day")?.value;
+
+  return `${year}-${month}-${day}`;
+}
 
 export async function POST(request: Request) {
   try {
@@ -70,10 +104,6 @@ export async function POST(request: Request) {
     // ========================================================
 
     const body = (await request.json()) as RegisterScanBody;
-
-    // ========================================================
-    // RFID UID
-    // ========================================================
 
     const uid = normalizeRfidUid(body.uid);
 
@@ -108,13 +138,17 @@ export async function POST(request: Request) {
         ? Math.max(0, Math.floor(body.uptimeSeconds))
         : null;
 
+    const dateKey = getJakartaDateKey();
+
     // ========================================================
-    // REFERENCES
+    // BASE REFERENCES
     // ========================================================
 
     const controlRef = doc(db, "system", "rfid-registration");
 
     const readerRef = doc(db, "devices", READER_DOCUMENT);
+
+    const cardRef = doc(db, "rfidCards", uid);
 
     const logRef = doc(collection(db, "scanLogs"));
 
@@ -141,76 +175,38 @@ export async function POST(request: Request) {
     };
 
     // ========================================================
-    // FIRESTORE TRANSACTION
+    // TRANSACTION
     // ========================================================
 
-    const result = await runTransaction<RegistrationResult>(
-      db,
-      async (transaction) => {
-        // ==================================================
-        // ACTIVE REGISTRATION CONTROL
-        // ==================================================
+    const result = await runTransaction<ScanResult>(db, async (transaction) => {
+      // ==================================================
+      // CHECK ACTIVE REGISTRATION SESSION
+      // ==================================================
 
-        const controlSnapshot = await transaction.get(controlRef);
+      const controlSnapshot = await transaction.get(controlRef);
 
-        const activeSessionId = controlSnapshot.exists()
-          ? controlSnapshot.data().activeSessionId
-          : null;
+      const activeSessionId = controlSnapshot.exists()
+        ? controlSnapshot.data().activeSessionId
+        : null;
 
-        // ==================================================
-        // NO ACTIVE SESSION
-        // ==================================================
+      // ==================================================
+      // MODE 1:
+      // REGISTRATION
+      // ==================================================
 
-        if (typeof activeSessionId !== "string" || !activeSessionId) {
-          transaction.set(readerRef, readerStatus, {
-            merge: true,
-          });
-
-          transaction.set(logRef, {
-            uid,
-
-            readerType,
-
-            action: "register",
-
-            result: "warning",
-
-            code: "NO_ACTIVE_SESSION",
-
-            employeeId: null,
-
-            employeeName: null,
-
-            message: "Kartu dipindai tanpa sesi registrasi aktif.",
-
-            createdAt: serverTimestamp(),
-          });
-
-          return {
-            type: "no_active_session",
-          };
-        }
-
-        // ==================================================
-        // REGISTRATION SESSION
-        // ==================================================
-
+      if (typeof activeSessionId === "string" && activeSessionId) {
         const sessionRef = doc(db, "registrationSessions", activeSessionId);
 
         const sessionSnapshot = await transaction.get(sessionRef);
 
-        // ==================================================
-        // INVALID SESSION
-        // ==================================================
+        // =================================================
+        // INVALID REGISTRATION SESSION
+        // =================================================
 
         if (
           !sessionSnapshot.exists() ||
           sessionSnapshot.data().status !== "waiting"
         ) {
-          transaction.set(readerRef, readerStatus, {
-            merge: true,
-          });
-
           transaction.set(
             controlRef,
             {
@@ -222,6 +218,10 @@ export async function POST(request: Request) {
               merge: true,
             },
           );
+
+          transaction.set(readerRef, readerStatus, {
+            merge: true,
+          });
 
           transaction.set(logRef, {
             uid,
@@ -248,40 +248,27 @@ export async function POST(request: Request) {
           };
         }
 
-        const sessionData = sessionSnapshot.data();
+        const session = sessionSnapshot.data();
 
         const employeeId =
-          typeof sessionData.employeeId === "string"
-            ? sessionData.employeeId
-            : "";
-
-        // ==================================================
-        // REFERENCES
-        // ==================================================
+          typeof session.employeeId === "string" ? session.employeeId : "";
 
         const employeeRef = doc(db, "employees", employeeId);
 
-        const cardRef = doc(db, "rfidCards", uid);
-
         /*
-         * Penting:
-         * seluruh READ transaction dilakukan
-         * sebelum WRITE berikutnya.
+         * Semua READ transaction dilakukan
+         * sebelum WRITE.
          */
 
         const employeeSnapshot = await transaction.get(employeeRef);
 
         const cardSnapshot = await transaction.get(cardRef);
 
-        // ==================================================
+        // =================================================
         // EMPLOYEE NOT FOUND
-        // ==================================================
+        // =================================================
 
         if (!employeeSnapshot.exists()) {
-          transaction.set(readerRef, readerStatus, {
-            merge: true,
-          });
-
           transaction.update(sessionRef, {
             status: "failed",
 
@@ -302,6 +289,10 @@ export async function POST(request: Request) {
             },
           );
 
+          transaction.set(readerRef, readerStatus, {
+            merge: true,
+          });
+
           transaction.set(logRef, {
             uid,
 
@@ -317,7 +308,7 @@ export async function POST(request: Request) {
 
             employeeName: null,
 
-            message: "Data karyawan untuk sesi registrasi tidak ditemukan.",
+            message: "Data karyawan tidak ditemukan.",
 
             createdAt: serverTimestamp(),
           });
@@ -329,9 +320,9 @@ export async function POST(request: Request) {
 
         const employee = employeeSnapshot.data();
 
-        // ==================================================
+        // =================================================
         // CARD ALREADY REGISTERED
-        // ==================================================
+        // =================================================
 
         if (cardSnapshot.exists()) {
           const existingCard = cardSnapshot.data();
@@ -339,11 +330,6 @@ export async function POST(request: Request) {
           const existingEmployeeName =
             typeof existingCard.employeeName === "string"
               ? existingCard.employeeName
-              : null;
-
-          const existingEmployeeId =
-            typeof existingCard.employeeId === "string"
-              ? existingCard.employeeId
               : null;
 
           transaction.set(readerRef, readerStatus, {
@@ -361,27 +347,27 @@ export async function POST(request: Request) {
 
             code: "CARD_ALREADY_REGISTERED",
 
-            employeeId: existingEmployeeId,
+            employeeId: existingCard.employeeId ?? null,
 
             employeeName: existingEmployeeName,
 
             message: existingEmployeeName
-              ? `Kartu RFID sudah terdaftar atas nama ${existingEmployeeName}.`
+              ? `Kartu sudah terdaftar atas nama ${existingEmployeeName}.`
               : "Kartu RFID sudah terdaftar.",
 
             createdAt: serverTimestamp(),
           });
 
           return {
-            type: "duplicate",
+            type: "card_already_registered",
 
             employeeName: existingEmployeeName,
           };
         }
 
-        // ==================================================
+        // =================================================
         // EMPLOYEE ALREADY HAS CARD
-        // ==================================================
+        // =================================================
 
         if (typeof employee.rfidUid === "string" && employee.rfidUid) {
           transaction.set(readerRef, readerStatus, {
@@ -413,9 +399,9 @@ export async function POST(request: Request) {
           };
         }
 
-        // ==================================================
+        // =================================================
         // CREATE RFID CARD
-        // ==================================================
+        // =================================================
 
         transaction.set(cardRef, {
           uid,
@@ -433,9 +419,9 @@ export async function POST(request: Request) {
           updatedAt: serverTimestamp(),
         });
 
-        // ==================================================
+        // =================================================
         // UPDATE EMPLOYEE
-        // ==================================================
+        // =================================================
 
         transaction.update(employeeRef, {
           rfidUid: uid,
@@ -443,9 +429,9 @@ export async function POST(request: Request) {
           updatedAt: serverTimestamp(),
         });
 
-        // ==================================================
+        // =================================================
         // COMPLETE SESSION
-        // ==================================================
+        // =================================================
 
         transaction.update(sessionRef, {
           status: "completed",
@@ -456,10 +442,6 @@ export async function POST(request: Request) {
 
           updatedAt: serverTimestamp(),
         });
-
-        // ==================================================
-        // CLEAR ACTIVE SESSION
-        // ==================================================
 
         transaction.set(
           controlRef,
@@ -475,17 +457,9 @@ export async function POST(request: Request) {
           },
         );
 
-        // ==================================================
-        // UPDATE READER
-        // ==================================================
-
         transaction.set(readerRef, readerStatus, {
           merge: true,
         });
-
-        // ==================================================
-        // CREATE LOG
-        // ==================================================
 
         transaction.set(logRef, {
           uid,
@@ -507,55 +481,338 @@ export async function POST(request: Request) {
           createdAt: serverTimestamp(),
         });
 
-        // ==================================================
-        // SUCCESS
-        // ==================================================
-
         return {
-          type: "success",
+          type: "registration_success",
 
           employeeName: employee.name ?? "",
         };
-      },
-    );
+      }
+
+      // ==================================================
+      //
+      // MODE 2:
+      // ATTENDANCE
+      //
+      // Tidak ada registration session.
+      //
+      // ==================================================
+
+      const cardSnapshot = await transaction.get(cardRef);
+
+      // ==================================================
+      // CARD NOT REGISTERED
+      // ==================================================
+
+      if (!cardSnapshot.exists()) {
+        transaction.set(readerRef, readerStatus, {
+          merge: true,
+        });
+
+        transaction.set(logRef, {
+          uid,
+
+          readerType,
+
+          action: "attendance",
+
+          result: "warning",
+
+          code: "CARD_NOT_REGISTERED",
+
+          employeeId: null,
+
+          employeeName: null,
+
+          message: "Kartu RFID belum terdaftar.",
+
+          createdAt: serverTimestamp(),
+        });
+
+        return {
+          type: "card_not_registered",
+        };
+      }
+
+      // ==================================================
+      // CARD DATA
+      // ==================================================
+
+      const card = cardSnapshot.data();
+
+      const employeeId =
+        typeof card.employeeId === "string" ? card.employeeId : "";
+
+      const employeeRef = doc(db, "employees", employeeId);
+
+      const attendanceId = `${dateKey}_${employeeId}`;
+
+      const attendanceRef = doc(db, "attendanceRecords", attendanceId);
+
+      /*
+       * Semua reads dahulu.
+       */
+
+      const employeeSnapshot = await transaction.get(employeeRef);
+
+      const attendanceSnapshot = await transaction.get(attendanceRef);
+
+      // ==================================================
+      // EMPLOYEE NOT FOUND
+      // ==================================================
+
+      if (!employeeSnapshot.exists()) {
+        transaction.set(readerRef, readerStatus, {
+          merge: true,
+        });
+
+        transaction.set(logRef, {
+          uid,
+
+          readerType,
+
+          action: "attendance",
+
+          result: "error",
+
+          code: "EMPLOYEE_NOT_FOUND",
+
+          employeeId,
+
+          employeeName: card.employeeName ?? null,
+
+          message: "Kartu terdaftar tetapi data karyawan tidak ditemukan.",
+
+          createdAt: serverTimestamp(),
+        });
+
+        return {
+          type: "employee_not_found",
+        };
+      }
+
+      const employee = employeeSnapshot.data();
+
+      const employeeName =
+        typeof employee.name === "string" ? employee.name : "";
+
+      // ==================================================
+      // EMPLOYEE INACTIVE
+      // ==================================================
+
+      if (employee.status !== "active") {
+        transaction.set(readerRef, readerStatus, {
+          merge: true,
+        });
+
+        transaction.set(logRef, {
+          uid,
+
+          readerType,
+
+          action: "attendance",
+
+          result: "warning",
+
+          code: "EMPLOYEE_INACTIVE",
+
+          employeeId: employeeSnapshot.id,
+
+          employeeName,
+
+          message: "Karyawan sedang tidak aktif.",
+
+          createdAt: serverTimestamp(),
+        });
+
+        return {
+          type: "employee_inactive",
+
+          employeeName,
+        };
+      }
+
+      // ==================================================
+      // FIRST SCAN TODAY
+      //
+      // CHECK IN
+      // ==================================================
+
+      if (!attendanceSnapshot.exists()) {
+        transaction.set(attendanceRef, {
+          dateKey,
+
+          employeeId: employeeSnapshot.id,
+
+          employeeCode: employee.employeeCode ?? "",
+
+          employeeName,
+
+          department: employee.department ?? "",
+
+          position: employee.position ?? "",
+
+          rfidUid: uid,
+
+          status: "checked_in",
+
+          checkInAt: serverTimestamp(),
+
+          checkOutAt: null,
+
+          createdAt: serverTimestamp(),
+
+          updatedAt: serverTimestamp(),
+        });
+
+        transaction.set(readerRef, readerStatus, {
+          merge: true,
+        });
+
+        transaction.set(logRef, {
+          uid,
+
+          readerType,
+
+          action: "check_in",
+
+          result: "success",
+
+          code: "ATTENDANCE_CHECK_IN",
+
+          employeeId: employeeSnapshot.id,
+
+          employeeName,
+
+          message: `${employeeName} berhasil absen masuk.`,
+
+          createdAt: serverTimestamp(),
+        });
+
+        return {
+          type: "attendance_check_in",
+
+          employeeName,
+        };
+      }
+
+      // ==================================================
+      // ATTENDANCE ALREADY EXISTS
+      // ==================================================
+
+      const attendance = attendanceSnapshot.data();
+
+      // ==================================================
+      // SECOND SCAN
+      //
+      // CHECK OUT
+      // ==================================================
+
+      if (!attendance.checkOutAt) {
+        transaction.update(attendanceRef, {
+          status: "completed",
+
+          checkOutAt: serverTimestamp(),
+
+          updatedAt: serverTimestamp(),
+        });
+
+        transaction.set(readerRef, readerStatus, {
+          merge: true,
+        });
+
+        transaction.set(logRef, {
+          uid,
+
+          readerType,
+
+          action: "check_out",
+
+          result: "success",
+
+          code: "ATTENDANCE_CHECK_OUT",
+
+          employeeId: employeeSnapshot.id,
+
+          employeeName,
+
+          message: `${employeeName} berhasil absen pulang.`,
+
+          createdAt: serverTimestamp(),
+        });
+
+        return {
+          type: "attendance_check_out",
+
+          employeeName,
+        };
+      }
+
+      // ==================================================
+      // ATTENDANCE ALREADY COMPLETE
+      // ==================================================
+
+      transaction.set(readerRef, readerStatus, {
+        merge: true,
+      });
+
+      transaction.set(logRef, {
+        uid,
+
+        readerType,
+
+        action: "attendance",
+
+        result: "warning",
+
+        code: "ATTENDANCE_ALREADY_COMPLETE",
+
+        employeeId: employeeSnapshot.id,
+
+        employeeName,
+
+        message: `Absensi ${employeeName} hari ini sudah lengkap.`,
+
+        createdAt: serverTimestamp(),
+      });
+
+      return {
+        type: "attendance_complete",
+
+        employeeName,
+      };
+    });
 
     // ========================================================
-    // RESPONSE
+    // HTTP RESPONSES
     // ========================================================
 
     switch (result.type) {
-      case "success":
+      // ======================================================
+      // REGISTRATION
+      // ======================================================
+
+      case "registration_success":
         return NextResponse.json({
           success: true,
 
           code: "CARD_REGISTERED",
 
+          mode: "registration",
+
           message: `RFID berhasil didaftarkan untuk ${result.employeeName}.`,
         });
 
-      case "no_active_session":
-        return NextResponse.json(
-          {
-            success: false,
-
-            code: "NO_ACTIVE_SESSION",
-
-            message: "Tidak ada sesi registrasi RFID yang aktif.",
-          },
-          {
-            status: 404,
-          },
-        );
-
-      case "duplicate":
+      case "card_already_registered":
         return NextResponse.json(
           {
             success: false,
 
             code: "CARD_ALREADY_REGISTERED",
 
+            mode: "registration",
+
             message: result.employeeName
-              ? `Kartu RFID sudah terdaftar atas nama ${result.employeeName}.`
+              ? `Kartu sudah terdaftar atas nama ${result.employeeName}.`
               : "Kartu RFID sudah terdaftar.",
           },
           {
@@ -570,6 +827,8 @@ export async function POST(request: Request) {
 
             code: "EMPLOYEE_ALREADY_HAS_CARD",
 
+            mode: "registration",
+
             message: "Karyawan sudah memiliki kartu RFID.",
           },
           {
@@ -577,22 +836,7 @@ export async function POST(request: Request) {
           },
         );
 
-      case "employee_not_found":
-        return NextResponse.json(
-          {
-            success: false,
-
-            code: "EMPLOYEE_NOT_FOUND",
-
-            message: "Karyawan tidak ditemukan.",
-          },
-          {
-            status: 404,
-          },
-        );
-
       case "invalid_session":
-      default:
         return NextResponse.json(
           {
             success: false,
@@ -605,9 +849,143 @@ export async function POST(request: Request) {
             status: 409,
           },
         );
+
+      // ======================================================
+      // ATTENDANCE CHECK IN
+      // ======================================================
+
+      case "attendance_check_in":
+        return NextResponse.json({
+          success: true,
+
+          code: "ATTENDANCE_CHECK_IN",
+
+          mode: "attendance",
+
+          attendanceType: "check_in",
+
+          employeeName: result.employeeName,
+
+          message: `${result.employeeName} berhasil absen masuk.`,
+        });
+
+      // ======================================================
+      // ATTENDANCE CHECK OUT
+      // ======================================================
+
+      case "attendance_check_out":
+        return NextResponse.json({
+          success: true,
+
+          code: "ATTENDANCE_CHECK_OUT",
+
+          mode: "attendance",
+
+          attendanceType: "check_out",
+
+          employeeName: result.employeeName,
+
+          message: `${result.employeeName} berhasil absen pulang.`,
+        });
+
+      // ======================================================
+      // ATTENDANCE COMPLETED
+      // ======================================================
+
+      case "attendance_complete":
+        return NextResponse.json(
+          {
+            success: false,
+
+            code: "ATTENDANCE_ALREADY_COMPLETE",
+
+            mode: "attendance",
+
+            employeeName: result.employeeName,
+
+            message: `Absensi ${result.employeeName} hari ini sudah lengkap.`,
+          },
+          {
+            status: 409,
+          },
+        );
+
+      // ======================================================
+      // CARD NOT REGISTERED
+      // ======================================================
+
+      case "card_not_registered":
+        return NextResponse.json(
+          {
+            success: false,
+
+            code: "CARD_NOT_REGISTERED",
+
+            mode: "attendance",
+
+            message: "Kartu RFID belum terdaftar.",
+          },
+          {
+            status: 404,
+          },
+        );
+
+      // ======================================================
+      // EMPLOYEE INACTIVE
+      // ======================================================
+
+      case "employee_inactive":
+        return NextResponse.json(
+          {
+            success: false,
+
+            code: "EMPLOYEE_INACTIVE",
+
+            mode: "attendance",
+
+            employeeName: result.employeeName,
+
+            message: "Karyawan sedang tidak aktif.",
+          },
+          {
+            status: 409,
+          },
+        );
+
+      // ======================================================
+      // EMPLOYEE NOT FOUND
+      // ======================================================
+
+      case "employee_not_found":
+        return NextResponse.json(
+          {
+            success: false,
+
+            code: "EMPLOYEE_NOT_FOUND",
+
+            message: "Data karyawan tidak ditemukan.",
+          },
+          {
+            status: 404,
+          },
+        );
+
+      default:
+        return NextResponse.json(
+          {
+            success: false,
+
+            code: "UNKNOWN_SCAN_RESULT",
+
+            message: "Hasil scan tidak dikenali.",
+          },
+          {
+            status: 500,
+          },
+        );
     }
   } catch (error) {
-    console.error("[REGISTER SCAN]", error);
+    console.error("[RFID SCAN]", error);
 
     return NextResponse.json(
       {

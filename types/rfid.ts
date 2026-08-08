@@ -19,10 +19,6 @@ export interface Employee {
 }
 
 export interface RfidDevice {
-  /**
-   * Hanya digunakan sebagai internal React key.
-   * BUKAN Device ID dari ESP32.
-   */
   id: string;
 
   name: string;
@@ -86,4 +82,32 @@ export interface ScanLog {
   message: string;
 
   createdAt: string | null;
+}
+
+export interface AttendanceRecord {
+  id: string;
+
+  dateKey: string;
+
+  employeeId: string;
+
+  employeeCode: string;
+
+  employeeName: string;
+
+  department: string;
+
+  position: string;
+
+  rfidUid: string;
+
+  status: "checked_in" | "completed";
+
+  checkInAt: string | null;
+
+  checkOutAt: string | null;
+
+  createdAt: string | null;
+
+  updatedAt: string | null;
 }

@@ -1,211 +1,1950 @@
-"use client";
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 
-import {
-  Activity,
-  Cpu,
-  LayoutDashboard,
-  Menu,
-  Radio,
-  ScanLine,
-  Users,
-  X,
-} from "lucide-react";
+#include <SPI.h>
+#include <MFRC522.h>
 
-import Link from "next/link";
+#include <ArduinoJson.h>
 
-import { usePathname } from "next/navigation";
+/*
+ * ============================================================
+ * NEXTY RFID - REGISTRATION + ATTENDANCE READER
+ * ============================================================
+ *
+ * Board:
+ * ESP32 DevKit V1 30 Pin
+ *
+ * Hardware:
+ * - RC522 RFID Reader
+ * - Buzzer
+ *
+ * Backend:
+ * Next.js + Firestore
+ *
+ * API:
+ * https://iot-rfid-beige.vercel.app
+ *
+ * FLOW:
+ *
+ * Jika ada sesi registrasi aktif:
+ *   RFID -> Registrasi kartu
+ *
+ * Jika tidak ada sesi registrasi:
+ *   RFID terdaftar -> Absensi
+ *
+ * Scan pertama:
+ *   ATTENDANCE_CHECK_IN
+ *
+ * Scan kedua:
+ *   ATTENDANCE_CHECK_OUT
+ *
+ * Scan berikutnya:
+ *   ATTENDANCE_ALREADY_COMPLETE
+ *
+ * ============================================================
+ */
 
-import { useState } from "react";
+// ============================================================
+// WIFI
+// ============================================================
 
-const menuItems = [
-  {
-    href: "/dashboard",
+const char* WIFI_SSID = "gwe";
+const char* WIFI_PASSWORD = "12345678";
 
-    label: "Dashboard",
+// ============================================================
+// API SERVER
+// ============================================================
 
-    icon: LayoutDashboard,
-  },
+const char* API_BASE_URL =
+  "https://iot-rfid-beige.vercel.app";
 
-  {
-    href: "/employees",
+const char* FIRMWARE_VERSION =
+  "1.3.0";
 
-    label: "Karyawan",
+// ============================================================
+// ESP32 DEVKIT V1 PIN
+// ============================================================
+//
+// RC522:
+//
+// SDA / SS  -> GPIO 5
+// SCK       -> GPIO 18
+// MOSI      -> GPIO 23
+// MISO      -> GPIO 19
+// RST       -> GPIO 27
+//
+// Buzzer:
+//
+// SIGNAL    -> GPIO 26
+//
+// ============================================================
 
-    icon: Users,
-  },
+#define RFID_SS_PIN     5
+#define RFID_RST_PIN    27
 
-  {
-    href: "/registration",
+#define RFID_SCK_PIN    18
+#define RFID_MISO_PIN   19
+#define RFID_MOSI_PIN   23
 
-    label: "Registrasi RFID",
+#define BUZZER_PIN      26
 
-    icon: ScanLine,
-  },
+// ============================================================
+// CONFIG
+// ============================================================
 
-  {
-    href: "/devices",
+const bool BUZZER_ACTIVE_HIGH = true;
 
-    label: "Perangkat",
+const bool ENABLE_HEARTBEAT = true;
 
-    icon: Cpu,
-  },
+/*
+ * Mencegah kartu sama dikirim terlalu cepat.
+ *
+ * 3 detik cukup aman untuk menghindari
+ * accidental double scan.
+ */
+const unsigned long CARD_COOLDOWN_MS =
+  3000;
 
-  {
-    href: "/logs",
+/*
+ * WiFi reconnect setiap 5 detik.
+ */
+const unsigned long WIFI_RETRY_INTERVAL_MS =
+  5000;
 
-    label: "Riwayat Scan",
+/*
+ * Heartbeat ke server setiap 60 detik.
+ */
+const unsigned long HEARTBEAT_INTERVAL_MS =
+  60000;
 
-    icon: Activity,
-  },
-];
+/*
+ * HTTP timeout.
+ */
+const unsigned long HTTP_TIMEOUT_MS =
+  10000;
 
-interface DashboardShellProps {
-  children: React.ReactNode;
+/*
+ * WiFi connection timeout.
+ */
+const unsigned long WIFI_CONNECT_TIMEOUT_MS =
+  15000;
+
+// ============================================================
+// RFID OBJECT
+// ============================================================
+
+MFRC522 rfid(
+  RFID_SS_PIN,
+  RFID_RST_PIN
+);
+
+// ============================================================
+// STATE
+// ============================================================
+
+unsigned long lastWiFiAttempt = 0;
+
+unsigned long lastHeartbeat = 0;
+
+unsigned long lastCardReadAt = 0;
+
+String lastUid = "";
+
+bool rfidReady = false;
+
+// ============================================================
+// BUZZER
+// ============================================================
+
+void buzzerWrite(bool state) {
+  if (BUZZER_ACTIVE_HIGH) {
+    digitalWrite(
+      BUZZER_PIN,
+      state ? HIGH : LOW
+    );
+  } else {
+    digitalWrite(
+      BUZZER_PIN,
+      state ? LOW : HIGH
+    );
+  }
 }
 
-export default function DashboardShell({ children }: DashboardShellProps) {
-  const pathname = usePathname();
+// ============================================================
 
-  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+void beep(unsigned int durationMs) {
+  buzzerWrite(true);
 
-  const currentMenu = menuItems.find(
-    (menu) => pathname === menu.href || pathname.startsWith(`${menu.href}/`),
+  delay(durationMs);
+
+  buzzerWrite(false);
+}
+
+// ============================================================
+// SUCCESS
+//
+// BEEEEEEP
+// ============================================================
+
+void beepSuccess() {
+  beep(400);
+}
+
+// ============================================================
+// CHECK IN
+//
+// BEEP
+// ============================================================
+
+void beepCheckIn() {
+  beep(250);
+}
+
+// ============================================================
+// CHECK OUT
+//
+// BEEP BEEP
+// ============================================================
+
+void beepCheckOut() {
+  beep(180);
+
+  delay(100);
+
+  beep(350);
+}
+
+// ============================================================
+// WARNING
+//
+// BEEP BEEP
+// ============================================================
+
+void beepWarning() {
+  beep(120);
+
+  delay(100);
+
+  beep(120);
+}
+
+// ============================================================
+// ERROR
+//
+// BEEP BEEP BEEP
+// ============================================================
+
+void beepError() {
+  beep(100);
+
+  delay(80);
+
+  beep(100);
+
+  delay(80);
+
+  beep(100);
+}
+
+// ============================================================
+// BOOT READY
+// ============================================================
+
+void beepReady() {
+  beep(100);
+}
+
+// ============================================================
+// WIFI INFORMATION
+// ============================================================
+
+void printWiFiInformation() {
+  if (
+    WiFi.status() != WL_CONNECTED
+  ) {
+    return;
+  }
+
+  Serial.println();
+
+  Serial.println(
+    "--------------------------------------------"
   );
 
-  return (
-    <div className="min-h-screen bg-[#f5f7fb] text-slate-950">
-      {mobileSidebarOpen && (
-        <button
-          aria-label="Tutup menu"
-          className="fixed inset-0 z-40 bg-slate-950/50 backdrop-blur-sm lg:hidden"
-          onClick={() => setMobileSidebarOpen(false)}
-        />
-      )}
-
-      <aside
-        className={[
-          "fixed inset-y-0 left-0 z-50 flex w-[280px] flex-col bg-[#0b1220] text-white transition-transform duration-300",
-          mobileSidebarOpen
-            ? "translate-x-0"
-            : "-translate-x-full lg:translate-x-0",
-        ].join(" ")}
-      >
-        <div className="flex h-24 items-center justify-between border-b border-white/8 px-7">
-          <Link href="/dashboard" className="flex items-center gap-3">
-            <div className="flex size-11 items-center justify-center rounded-2xl bg-white text-[#0b1220] shadow-xl shadow-black/20">
-              <Radio size={22} strokeWidth={2.3} />
-            </div>
-
-            <div>
-              <div className="text-[17px] font-black tracking-[-0.03em]">
-                NEXTY RFID
-              </div>
-
-              <div className="mt-0.5 text-[10px] font-semibold tracking-[0.18em] text-slate-500">
-                CONTROL CENTER
-              </div>
-            </div>
-          </Link>
-
-          <button
-            className="flex size-10 items-center justify-center rounded-xl text-slate-400 hover:bg-white/10 hover:text-white lg:hidden"
-            onClick={() => setMobileSidebarOpen(false)}
-          >
-            <X size={20} />
-          </button>
-        </div>
-
-        <nav className="flex-1 space-y-1.5 px-4 py-7">
-          <div className="mb-3 px-3 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-600">
-            Workspace
-          </div>
-
-          {menuItems.map((item) => {
-            const Icon = item.icon;
-
-            const active =
-              pathname === item.href || pathname.startsWith(`${item.href}/`);
-
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                onClick={() => setMobileSidebarOpen(false)}
-                className={[
-                  "group flex items-center gap-3 rounded-2xl px-4 py-3.5 text-sm font-semibold transition",
-                  active
-                    ? "bg-white text-slate-950 shadow-lg shadow-black/20"
-                    : "text-slate-400 hover:bg-white/7 hover:text-white",
-                ].join(" ")}
-              >
-                <Icon
-                  size={18}
-                  strokeWidth={2.1}
-                  className={
-                    active
-                      ? "text-slate-950"
-                      : "text-slate-500 transition group-hover:text-white"
-                  }
-                />
-
-                {item.label}
-              </Link>
-            );
-          })}
-        </nav>
-
-        <div className="p-4">
-          <div className="rounded-[22px] border border-white/8 bg-white/[0.045] p-4">
-            <div className="flex items-center gap-3">
-              <span className="relative flex size-3">
-                <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-60" />
-
-                <span className="relative inline-flex size-3 rounded-full bg-emerald-400" />
-              </span>
-
-              <div>
-                <p className="text-xs font-bold text-white">System Running</p>
-
-                <p className="mt-0.5 text-[11px] text-slate-500">
-                  RFID Management
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </aside>
-
-      <div className="lg:pl-[280px]">
-        <header className="sticky top-0 z-30 border-b border-slate-200/70 bg-[#f5f7fb]/90 backdrop-blur-xl">
-          <div className="flex h-[82px] items-center justify-between px-5 sm:px-7 lg:px-9">
-            <div className="flex items-center gap-4">
-              <button
-                className="flex size-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 shadow-sm lg:hidden"
-                onClick={() => setMobileSidebarOpen(true)}
-              >
-                <Menu size={20} />
-              </button>
-
-              <div>
-                <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-slate-400">
-                  RFID Management
-                </p>
-
-                <h1 className="mt-1 text-xl font-black tracking-[-0.035em] text-slate-950 sm:text-2xl">
-                  {currentMenu?.label ?? "Control Center"}
-                </h1>
-              </div>
-            </div>
-
-            <div className="hidden items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-xs font-bold text-emerald-700 sm:flex">
-              <span className="size-2 rounded-full bg-emerald-500" />
-              API Ready
-            </div>
-          </div>
-        </header>
-
-        <main className="px-5 py-7 sm:px-7 lg:px-9 lg:py-9">{children}</main>
-      </div>
-    </div>
+  Serial.println(
+    "[WIFI] CONNECTION INFORMATION"
   );
+
+  Serial.print(
+    "[WIFI] SSID    : "
+  );
+
+  Serial.println(
+    WiFi.SSID()
+  );
+
+  Serial.print(
+    "[WIFI] IP      : "
+  );
+
+  Serial.println(
+    WiFi.localIP()
+  );
+
+  Serial.print(
+    "[WIFI] Gateway : "
+  );
+
+  Serial.println(
+    WiFi.gatewayIP()
+  );
+
+  Serial.print(
+    "[WIFI] RSSI    : "
+  );
+
+  Serial.print(
+    WiFi.RSSI()
+  );
+
+  Serial.println(
+    " dBm"
+  );
+
+  Serial.println(
+    "--------------------------------------------"
+  );
+
+  Serial.println();
+}
+
+// ============================================================
+// WIFI CONNECT
+// ============================================================
+
+bool connectWiFi() {
+  if (
+    WiFi.status() == WL_CONNECTED
+  ) {
+    return true;
+  }
+
+  Serial.println();
+
+  Serial.println(
+    "[WIFI] Connecting..."
+  );
+
+  Serial.print(
+    "[WIFI] SSID: "
+  );
+
+  Serial.println(
+    WIFI_SSID
+  );
+
+  WiFi.mode(
+    WIFI_STA
+  );
+
+  WiFi.disconnect();
+
+  delay(100);
+
+  WiFi.begin(
+    WIFI_SSID,
+    WIFI_PASSWORD
+  );
+
+  unsigned long startedAt =
+    millis();
+
+  while (
+    WiFi.status() != WL_CONNECTED &&
+    millis() - startedAt <
+      WIFI_CONNECT_TIMEOUT_MS
+  ) {
+    delay(400);
+
+    Serial.print(".");
+  }
+
+  Serial.println();
+
+  // ==========================================================
+  // CONNECTED
+  // ==========================================================
+
+  if (
+    WiFi.status() == WL_CONNECTED
+  ) {
+    Serial.println(
+      "[WIFI] Connected."
+    );
+
+    printWiFiInformation();
+
+    return true;
+  }
+
+  // ==========================================================
+  // FAILED
+  // ==========================================================
+
+  Serial.println(
+    "[WIFI] Connection failed."
+  );
+
+  Serial.println(
+    "[WIFI] Reconnect otomatis akan dicoba."
+  );
+
+  return false;
+}
+
+// ============================================================
+// MAINTAIN WIFI
+// ============================================================
+
+void maintainWiFi() {
+  if (
+    WiFi.status() == WL_CONNECTED
+  ) {
+    return;
+  }
+
+  unsigned long now =
+    millis();
+
+  if (
+    now - lastWiFiAttempt <
+    WIFI_RETRY_INTERVAL_MS
+  ) {
+    return;
+  }
+
+  lastWiFiAttempt =
+    now;
+
+  Serial.println();
+
+  Serial.println(
+    "[WIFI] Connection lost."
+  );
+
+  Serial.println(
+    "[WIFI] Reconnecting..."
+  );
+
+  connectWiFi();
+}
+
+// ============================================================
+// GET RFID UID
+// ============================================================
+
+String getCardUid() {
+  String uid = "";
+
+  for (
+    byte i = 0;
+    i < rfid.uid.size;
+    i++
+  ) {
+    if (
+      rfid.uid.uidByte[i] <
+      0x10
+    ) {
+      uid += "0";
+    }
+
+    uid += String(
+      rfid.uid.uidByte[i],
+      HEX
+    );
+  }
+
+  uid.toUpperCase();
+
+  return uid;
+}
+
+// ============================================================
+// DUPLICATE LOCAL
+// ============================================================
+
+bool isLocalDuplicate(
+  const String& uid
+) {
+  unsigned long now =
+    millis();
+
+  if (
+    uid == lastUid &&
+    now - lastCardReadAt <
+      CARD_COOLDOWN_MS
+  ) {
+    return true;
+  }
+
+  lastUid =
+    uid;
+
+  lastCardReadAt =
+    now;
+
+  return false;
+}
+
+// ============================================================
+// RFID HALT
+// ============================================================
+
+void haltCard() {
+  rfid.PICC_HaltA();
+
+  rfid.PCD_StopCrypto1();
+}
+
+// ============================================================
+// HTTP INIT
+// ============================================================
+
+bool beginHttp(
+  HTTPClient& http,
+  WiFiClientSecure& client,
+  const String& url
+) {
+  /*
+   * Prototype:
+   * HTTPS dipakai tetapi root CA belum diverifikasi.
+   */
+
+  client.setInsecure();
+
+  client.setHandshakeTimeout(
+    10
+  );
+
+  if (
+    !http.begin(
+      client,
+      url
+    )
+  ) {
+    Serial.println(
+      "[HTTP] Failed to initialize."
+    );
+
+    return false;
+  }
+
+  http.addHeader(
+    "Content-Type",
+    "application/json"
+  );
+
+  http.addHeader(
+    "Accept",
+    "application/json"
+  );
+
+  http.setTimeout(
+    HTTP_TIMEOUT_MS
+  );
+
+  return true;
+}
+
+// ============================================================
+// HANDLE SCAN RESPONSE
+// ============================================================
+
+void handleScanResponse(
+  int httpCode,
+  const String& responseBody
+) {
+  Serial.println();
+
+  Serial.println(
+    "============================================"
+  );
+
+  Serial.println(
+    "[API] RFID RESPONSE"
+  );
+
+  Serial.print(
+    "[API] HTTP    : "
+  );
+
+  Serial.println(
+    httpCode
+  );
+
+  Serial.print(
+    "[API] Response: "
+  );
+
+  if (
+    responseBody.length() > 0
+  ) {
+    Serial.println(
+      responseBody
+    );
+  } else {
+    Serial.println(
+      "(empty)"
+    );
+  }
+
+  Serial.println(
+    "============================================"
+  );
+
+  // ==========================================================
+  // PARSE JSON
+  // ==========================================================
+
+  JsonDocument responseJson;
+
+  String code = "";
+
+  String message = "";
+
+  String mode = "";
+
+  String employeeName = "";
+
+  String attendanceType = "";
+
+  DeserializationError jsonError =
+    deserializeJson(
+      responseJson,
+      responseBody
+    );
+
+  if (!jsonError) {
+    code =
+      responseJson["code"] |
+      "";
+
+    message =
+      responseJson["message"] |
+      "";
+
+    mode =
+      responseJson["mode"] |
+      "";
+
+    employeeName =
+      responseJson["employeeName"] |
+      "";
+
+    attendanceType =
+      responseJson["attendanceType"] |
+      "";
+  } else {
+    Serial.print(
+      "[JSON] Parse error: "
+    );
+
+    Serial.println(
+      jsonError.c_str()
+    );
+  }
+
+  // ==========================================================
+  // REGISTRATION SUCCESS
+  // ==========================================================
+
+  if (
+    code ==
+    "CARD_REGISTERED"
+  ) {
+    Serial.println();
+
+    Serial.println(
+      "[RFID] REGISTRATION SUCCESS"
+    );
+
+    if (
+      message.length() > 0
+    ) {
+      Serial.print(
+        "[RFID] "
+      );
+
+      Serial.println(
+        message
+      );
+    }
+
+    beepSuccess();
+
+    return;
+  }
+
+  // ==========================================================
+  // ATTENDANCE CHECK IN
+  // ==========================================================
+
+  if (
+    code ==
+    "ATTENDANCE_CHECK_IN"
+  ) {
+    Serial.println();
+
+    Serial.println(
+      "[ATTENDANCE] CHECK IN SUCCESS"
+    );
+
+    if (
+      employeeName.length() > 0
+    ) {
+      Serial.print(
+        "[ATTENDANCE] Employee: "
+      );
+
+      Serial.println(
+        employeeName
+      );
+    }
+
+    if (
+      message.length() > 0
+    ) {
+      Serial.print(
+        "[ATTENDANCE] "
+      );
+
+      Serial.println(
+        message
+      );
+    }
+
+    /*
+     * 1 beep untuk masuk.
+     */
+    beepCheckIn();
+
+    return;
+  }
+
+  // ==========================================================
+  // ATTENDANCE CHECK OUT
+  // ==========================================================
+
+  if (
+    code ==
+    "ATTENDANCE_CHECK_OUT"
+  ) {
+    Serial.println();
+
+    Serial.println(
+      "[ATTENDANCE] CHECK OUT SUCCESS"
+    );
+
+    if (
+      employeeName.length() > 0
+    ) {
+      Serial.print(
+        "[ATTENDANCE] Employee: "
+      );
+
+      Serial.println(
+        employeeName
+      );
+    }
+
+    if (
+      message.length() > 0
+    ) {
+      Serial.print(
+        "[ATTENDANCE] "
+      );
+
+      Serial.println(
+        message
+      );
+    }
+
+    /*
+     * Pola khusus check out.
+     */
+    beepCheckOut();
+
+    return;
+  }
+
+  // ==========================================================
+  // ATTENDANCE COMPLETE
+  // ==========================================================
+
+  if (
+    code ==
+    "ATTENDANCE_ALREADY_COMPLETE"
+  ) {
+    Serial.println();
+
+    Serial.println(
+      "[ATTENDANCE] WARNING"
+    );
+
+    Serial.println(
+      "[ATTENDANCE] Absensi hari ini sudah lengkap."
+    );
+
+    if (
+      employeeName.length() > 0
+    ) {
+      Serial.print(
+        "[ATTENDANCE] Employee: "
+      );
+
+      Serial.println(
+        employeeName
+      );
+    }
+
+    beepWarning();
+
+    return;
+  }
+
+  // ==========================================================
+  // CARD NOT REGISTERED
+  // ==========================================================
+
+  if (
+    code ==
+    "CARD_NOT_REGISTERED"
+  ) {
+    Serial.println();
+
+    Serial.println(
+      "[RFID] WARNING"
+    );
+
+    Serial.println(
+      "[RFID] Kartu belum terdaftar."
+    );
+
+    beepWarning();
+
+    return;
+  }
+
+  // ==========================================================
+  // CARD ALREADY REGISTERED
+  //
+  // Terjadi apabila admin sedang membuka sesi
+  // registrasi lalu kartu yang sudah terdaftar discan.
+  // ==========================================================
+
+  if (
+    code ==
+    "CARD_ALREADY_REGISTERED"
+  ) {
+    Serial.println();
+
+    Serial.println(
+      "[RFID] WARNING"
+    );
+
+    Serial.println(
+      "[RFID] Kartu sudah digunakan."
+    );
+
+    if (
+      message.length() > 0
+    ) {
+      Serial.print(
+        "[RFID] "
+      );
+
+      Serial.println(
+        message
+      );
+    }
+
+    beepWarning();
+
+    return;
+  }
+
+  // ==========================================================
+  // EMPLOYEE ALREADY HAS CARD
+  // ==========================================================
+
+  if (
+    code ==
+    "EMPLOYEE_ALREADY_HAS_CARD"
+  ) {
+    Serial.println();
+
+    Serial.println(
+      "[RFID] WARNING"
+    );
+
+    Serial.println(
+      "[RFID] Karyawan sudah memiliki RFID."
+    );
+
+    beepWarning();
+
+    return;
+  }
+
+  // ==========================================================
+  // EMPLOYEE INACTIVE
+  // ==========================================================
+
+  if (
+    code ==
+    "EMPLOYEE_INACTIVE"
+  ) {
+    Serial.println();
+
+    Serial.println(
+      "[ATTENDANCE] WARNING"
+    );
+
+    Serial.println(
+      "[ATTENDANCE] Karyawan sedang tidak aktif."
+    );
+
+    if (
+      employeeName.length() > 0
+    ) {
+      Serial.print(
+        "[ATTENDANCE] Employee: "
+      );
+
+      Serial.println(
+        employeeName
+      );
+    }
+
+    beepWarning();
+
+    return;
+  }
+
+  // ==========================================================
+  // EMPLOYEE NOT FOUND
+  // ==========================================================
+
+  if (
+    code ==
+    "EMPLOYEE_NOT_FOUND"
+  ) {
+    Serial.println();
+
+    Serial.println(
+      "[RFID] ERROR"
+    );
+
+    Serial.println(
+      "[RFID] Data karyawan tidak ditemukan."
+    );
+
+    beepError();
+
+    return;
+  }
+
+  // ==========================================================
+  // INVALID SESSION
+  // ==========================================================
+
+  if (
+    code ==
+    "INVALID_SESSION"
+  ) {
+    Serial.println();
+
+    Serial.println(
+      "[RFID] WARNING"
+    );
+
+    Serial.println(
+      "[RFID] Sesi registrasi tidak valid."
+    );
+
+    beepWarning();
+
+    return;
+  }
+
+  // ==========================================================
+  // INVALID UID
+  // ==========================================================
+
+  if (
+    code ==
+    "INVALID_UID"
+  ) {
+    Serial.println();
+
+    Serial.println(
+      "[RFID] ERROR"
+    );
+
+    Serial.println(
+      "[RFID] Format UID tidak valid."
+    );
+
+    beepError();
+
+    return;
+  }
+
+  // ==========================================================
+  // GENERIC SUCCESS
+  // ==========================================================
+
+  if (
+    httpCode >= 200 &&
+    httpCode < 300
+  ) {
+    Serial.println();
+
+    Serial.println(
+      "[API] SUCCESS"
+    );
+
+    if (
+      mode.length() > 0
+    ) {
+      Serial.print(
+        "[API] Mode: "
+      );
+
+      Serial.println(
+        mode
+      );
+    }
+
+    if (
+      attendanceType.length() > 0
+    ) {
+      Serial.print(
+        "[API] Attendance Type: "
+      );
+
+      Serial.println(
+        attendanceType
+      );
+    }
+
+    if (
+      message.length() > 0
+    ) {
+      Serial.print(
+        "[API] "
+      );
+
+      Serial.println(
+        message
+      );
+    }
+
+    beepSuccess();
+
+    return;
+  }
+
+  // ==========================================================
+  // SERVER ERROR
+  // ==========================================================
+
+  if (
+    httpCode >= 500
+  ) {
+    Serial.println();
+
+    Serial.println(
+      "[API] SERVER ERROR"
+    );
+
+    if (
+      message.length() > 0
+    ) {
+      Serial.println(
+        message
+      );
+    }
+
+    beepError();
+
+    return;
+  }
+
+  // ==========================================================
+  // UNKNOWN RESPONSE
+  // ==========================================================
+
+  Serial.println();
+
+  Serial.println(
+    "[API] Unexpected response."
+  );
+
+  if (
+    code.length() > 0
+  ) {
+    Serial.print(
+      "[API] Code: "
+    );
+
+    Serial.println(
+      code
+    );
+  }
+
+  if (
+    message.length() > 0
+  ) {
+    Serial.print(
+      "[API] Message: "
+    );
+
+    Serial.println(
+      message
+    );
+  }
+
+  beepError();
+}
+
+// ============================================================
+// SEND RFID SCAN
+// ============================================================
+
+void sendCardToServer(
+  const String& uid
+) {
+  // ==========================================================
+  // WIFI CHECK
+  // ==========================================================
+
+  if (
+    WiFi.status() != WL_CONNECTED
+  ) {
+    Serial.println();
+
+    Serial.println(
+      "[RFID] ERROR"
+    );
+
+    Serial.println(
+      "[RFID] WiFi offline."
+    );
+
+    Serial.println(
+      "[RFID] UID tidak dikirim ke server."
+    );
+
+    beepError();
+
+    return;
+  }
+
+  // ==========================================================
+  // URL
+  // ==========================================================
+
+  String url =
+    String(
+      API_BASE_URL
+    ) +
+    "/api/device/register-scan";
+
+  WiFiClientSecure client;
+
+  HTTPClient http;
+
+  if (
+    !beginHttp(
+      http,
+      client,
+      url
+    )
+  ) {
+    beepError();
+
+    return;
+  }
+
+  // ==========================================================
+  // JSON
+  // ==========================================================
+
+  JsonDocument payload;
+
+  payload["uid"] =
+    uid;
+
+  /*
+   * type sekarang lebih tepat kita sebut
+   * hybrid karena reader bisa dipakai:
+   *
+   * - registration
+   * - attendance
+   *
+   * Namun backend kita masih kompatibel
+   * jika type tetap registration.
+   */
+
+  payload["type"] =
+    "registration";
+
+  payload["firmwareVersion"] =
+    FIRMWARE_VERSION;
+
+  payload["wifiRssi"] =
+    WiFi.RSSI();
+
+  payload["uptimeSeconds"] =
+    millis() /
+    1000UL;
+
+  String requestBody = "";
+
+  serializeJson(
+    payload,
+    requestBody
+  );
+
+  // ==========================================================
+  // DEBUG
+  // ==========================================================
+
+  Serial.println();
+
+  Serial.println(
+    "[API] Sending RFID scan..."
+  );
+
+  Serial.print(
+    "[API] POST : "
+  );
+
+  Serial.println(
+    url
+  );
+
+  Serial.print(
+    "[API] JSON : "
+  );
+
+  Serial.println(
+    requestBody
+  );
+
+  // ==========================================================
+  // REQUEST
+  // ==========================================================
+
+  int httpCode =
+    http.POST(
+      requestBody
+    );
+
+  // ==========================================================
+  // NETWORK ERROR
+  // ==========================================================
+
+  if (
+    httpCode <= 0
+  ) {
+    Serial.println();
+
+    Serial.print(
+      "[API] Connection error: "
+    );
+
+    Serial.println(
+      http.errorToString(
+        httpCode
+      )
+    );
+
+    beepError();
+
+    http.end();
+
+    return;
+  }
+
+  // ==========================================================
+  // RESPONSE
+  // ==========================================================
+
+  String responseBody =
+    http.getString();
+
+  handleScanResponse(
+    httpCode,
+    responseBody
+  );
+
+  http.end();
+}
+
+// ============================================================
+// HEARTBEAT
+// ============================================================
+
+void sendHeartbeat() {
+  if (
+    !ENABLE_HEARTBEAT
+  ) {
+    return;
+  }
+
+  if (
+    WiFi.status() != WL_CONNECTED
+  ) {
+    return;
+  }
+
+  String url =
+    String(
+      API_BASE_URL
+    ) +
+    "/api/device/heartbeat";
+
+  WiFiClientSecure client;
+
+  HTTPClient http;
+
+  if (
+    !beginHttp(
+      http,
+      client,
+      url
+    )
+  ) {
+    Serial.println(
+      "[HEARTBEAT] HTTP init failed."
+    );
+
+    return;
+  }
+
+  // ==========================================================
+  // JSON PAYLOAD
+  // ==========================================================
+
+  JsonDocument payload;
+
+  payload["type"] =
+    "registration";
+
+  payload["firmwareVersion"] =
+    FIRMWARE_VERSION;
+
+  payload["wifiRssi"] =
+    WiFi.RSSI();
+
+  payload["uptimeSeconds"] =
+    millis() /
+    1000UL;
+
+  String requestBody = "";
+
+  serializeJson(
+    payload,
+    requestBody
+  );
+
+  // ==========================================================
+  // SEND
+  // ==========================================================
+
+  Serial.println();
+
+  Serial.println(
+    "[HEARTBEAT] Sending..."
+  );
+
+  Serial.print(
+    "[HEARTBEAT] POST : "
+  );
+
+  Serial.println(
+    url
+  );
+
+  int httpCode =
+    http.POST(
+      requestBody
+    );
+
+  Serial.print(
+    "[HEARTBEAT] HTTP : "
+  );
+
+  Serial.println(
+    httpCode
+  );
+
+  // ==========================================================
+  // RESPONSE
+  // ==========================================================
+
+  if (
+    httpCode > 0
+  ) {
+    String responseBody =
+      http.getString();
+
+    if (
+      responseBody.length() > 0
+    ) {
+      Serial.print(
+        "[HEARTBEAT] Response: "
+      );
+
+      Serial.println(
+        responseBody
+      );
+    }
+
+    if (
+      httpCode >= 200 &&
+      httpCode < 300
+    ) {
+      Serial.println(
+        "[HEARTBEAT] Accepted."
+      );
+    } else {
+      Serial.println(
+        "[HEARTBEAT] Rejected."
+      );
+    }
+  } else {
+    Serial.print(
+      "[HEARTBEAT] Connection error: "
+    );
+
+    Serial.println(
+      http.errorToString(
+        httpCode
+      )
+    );
+  }
+
+  http.end();
+}
+
+// ============================================================
+// RFID INITIALIZATION
+// ============================================================
+
+void initializeRFID() {
+  Serial.println();
+
+  Serial.println(
+    "[RFID] Initializing SPI..."
+  );
+
+  SPI.begin(
+    RFID_SCK_PIN,
+    RFID_MISO_PIN,
+    RFID_MOSI_PIN,
+    RFID_SS_PIN
+  );
+
+  delay(50);
+
+  Serial.println(
+    "[RFID] Initializing RC522..."
+  );
+
+  rfid.PCD_Init();
+
+  delay(100);
+
+  /*
+   * Maksimalkan antenna gain.
+   */
+  rfid.PCD_SetAntennaGain(
+    MFRC522::RxGain_max
+  );
+
+  byte version =
+    rfid.PCD_ReadRegister(
+      MFRC522::VersionReg
+    );
+
+  Serial.print(
+    "[RFID] Version register: 0x"
+  );
+
+  Serial.println(
+    version,
+    HEX
+  );
+
+  // ==========================================================
+  // ERROR
+  // ==========================================================
+
+  if (
+    version == 0x00 ||
+    version == 0xFF
+  ) {
+    Serial.println();
+
+    Serial.println(
+      "[RFID] RC522 NOT DETECTED!"
+    );
+
+    Serial.println(
+      "[RFID] Periksa wiring."
+    );
+
+    Serial.println(
+      "[RFID] 3.3V -> 3.3V"
+    );
+
+    Serial.println(
+      "[RFID] GND  -> GND"
+    );
+
+    Serial.println(
+      "[RFID] SDA  -> GPIO 5"
+    );
+
+    Serial.println(
+      "[RFID] SCK  -> GPIO 18"
+    );
+
+    Serial.println(
+      "[RFID] MOSI -> GPIO 23"
+    );
+
+    Serial.println(
+      "[RFID] MISO -> GPIO 19"
+    );
+
+    Serial.println(
+      "[RFID] RST  -> GPIO 27"
+    );
+
+    rfidReady =
+      false;
+
+    beepError();
+
+    return;
+  }
+
+  // ==========================================================
+  // READY
+  // ==========================================================
+
+  rfidReady =
+    true;
+
+  Serial.println(
+    "[RFID] RC522 ready."
+  );
+
+  beepReady();
+}
+
+// ============================================================
+// SYSTEM INFORMATION
+// ============================================================
+
+void printSystemInformation() {
+  Serial.println();
+
+  Serial.println(
+    "============================================"
+  );
+
+  Serial.println(
+    "        NEXTY RFID ATTENDANCE SYSTEM"
+  );
+
+  Serial.println(
+    "============================================"
+  );
+
+  Serial.println(
+    "Mode       : Registration + Attendance"
+  );
+
+  Serial.print(
+    "Firmware   : "
+  );
+
+  Serial.println(
+    FIRMWARE_VERSION
+  );
+
+  Serial.print(
+    "API Server : "
+  );
+
+  Serial.println(
+    API_BASE_URL
+  );
+
+  Serial.println(
+    "--------------------------------------------"
+  );
+
+  Serial.println(
+    "RC522 Wiring"
+  );
+
+  Serial.print(
+    "SDA / SS   : GPIO "
+  );
+
+  Serial.println(
+    RFID_SS_PIN
+  );
+
+  Serial.print(
+    "SCK        : GPIO "
+  );
+
+  Serial.println(
+    RFID_SCK_PIN
+  );
+
+  Serial.print(
+    "MOSI       : GPIO "
+  );
+
+  Serial.println(
+    RFID_MOSI_PIN
+  );
+
+  Serial.print(
+    "MISO       : GPIO "
+  );
+
+  Serial.println(
+    RFID_MISO_PIN
+  );
+
+  Serial.print(
+    "RST        : GPIO "
+  );
+
+  Serial.println(
+    RFID_RST_PIN
+  );
+
+  Serial.print(
+    "Buzzer     : GPIO "
+  );
+
+  Serial.println(
+    BUZZER_PIN
+  );
+
+  Serial.println(
+    "============================================"
+  );
+
+  Serial.println();
+}
+
+// ============================================================
+// SETUP
+// ============================================================
+
+void setup() {
+  // ==========================================================
+  // SERIAL
+  // ==========================================================
+
+  Serial.begin(
+    115200
+  );
+
+  delay(700);
+
+  printSystemInformation();
+
+  // ==========================================================
+  // BUZZER
+  // ==========================================================
+
+  pinMode(
+    BUZZER_PIN,
+    OUTPUT
+  );
+
+  buzzerWrite(
+    false
+  );
+
+  // ==========================================================
+  // RFID
+  // ==========================================================
+
+  initializeRFID();
+
+  // ==========================================================
+  // WIFI
+  // ==========================================================
+
+  Serial.println();
+
+  Serial.println(
+    "[SYSTEM] Connecting WiFi..."
+  );
+
+  bool wifiConnected =
+    connectWiFi();
+
+  // ==========================================================
+  // FIRST HEARTBEAT
+  // ==========================================================
+
+  if (
+    wifiConnected &&
+    ENABLE_HEARTBEAT
+  ) {
+    Serial.println(
+      "[SYSTEM] Sending initial heartbeat..."
+    );
+
+    sendHeartbeat();
+
+    lastHeartbeat =
+      millis();
+  }
+
+  // ==========================================================
+  // READY
+  // ==========================================================
+
+  Serial.println();
+
+  Serial.println(
+    "============================================"
+  );
+
+  if (
+    rfidReady
+  ) {
+    Serial.println(
+      "[SYSTEM] READY"
+    );
+
+    Serial.println(
+      "[SYSTEM] Tempelkan kartu RFID."
+    );
+
+    Serial.println();
+
+    Serial.println(
+      "[SYSTEM] Flow:"
+    );
+
+    Serial.println(
+      "[SYSTEM] Registration session ON -> Register"
+    );
+
+    Serial.println(
+      "[SYSTEM] Registration session OFF -> Attendance"
+    );
+  } else {
+    Serial.println(
+      "[SYSTEM] RFID NOT READY"
+    );
+
+    Serial.println(
+      "[SYSTEM] Periksa RC522."
+    );
+  }
+
+  Serial.println(
+    "============================================"
+  );
+
+  Serial.println();
+}
+
+// ============================================================
+// LOOP
+// ============================================================
+
+void loop() {
+  // ==========================================================
+  // WIFI
+  // ==========================================================
+
+  maintainWiFi();
+
+  // ==========================================================
+  // HEARTBEAT
+  // ==========================================================
+
+  if (
+    ENABLE_HEARTBEAT &&
+    WiFi.status() == WL_CONNECTED
+  ) {
+    unsigned long now =
+      millis();
+
+    if (
+      now - lastHeartbeat >=
+      HEARTBEAT_INTERVAL_MS
+    ) {
+      lastHeartbeat =
+        now;
+
+      sendHeartbeat();
+    }
+  }
+
+  // ==========================================================
+  // RFID READY
+  // ==========================================================
+
+  if (
+    !rfidReady
+  ) {
+    delay(500);
+
+    return;
+  }
+
+  // ==========================================================
+  // NEW CARD
+  // ==========================================================
+
+  if (
+    !rfid.PICC_IsNewCardPresent()
+  ) {
+    delay(10);
+
+    return;
+  }
+
+  // ==========================================================
+  // READ CARD
+  // ==========================================================
+
+  if (
+    !rfid.PICC_ReadCardSerial()
+  ) {
+    delay(10);
+
+    return;
+  }
+
+  // ==========================================================
+  // UID
+  // ==========================================================
+
+  String uid =
+    getCardUid();
+
+  Serial.println();
+
+  Serial.println(
+    "============================================"
+  );
+
+  Serial.println(
+    "[RFID] CARD DETECTED"
+  );
+
+  Serial.print(
+    "[RFID] UID       : "
+  );
+
+  Serial.println(
+    uid
+  );
+
+  Serial.print(
+    "[RFID] UID Size  : "
+  );
+
+  Serial.print(
+    rfid.uid.size
+  );
+
+  Serial.println(
+    " byte"
+  );
+
+  if (
+    WiFi.status() == WL_CONNECTED
+  ) {
+    Serial.print(
+      "[RFID] WiFi RSSI : "
+    );
+
+    Serial.print(
+      WiFi.RSSI()
+    );
+
+    Serial.println(
+      " dBm"
+    );
+  }
+
+  Serial.println(
+    "============================================"
+  );
+
+  // ==========================================================
+  // LOCAL DUPLICATE
+  // ==========================================================
+
+  if (
+    isLocalDuplicate(
+      uid
+    )
+  ) {
+    Serial.println();
+
+    Serial.println(
+      "[RFID] Duplicate lokal diabaikan."
+    );
+
+    haltCard();
+
+    delay(50);
+
+    return;
+  }
+
+  // ==========================================================
+  // SEND
+  // ==========================================================
+
+  sendCardToServer(
+    uid
+  );
+
+  // ==========================================================
+  // HALT CARD
+  // ==========================================================
+
+  haltCard();
+
+  Serial.println();
+
+  Serial.println(
+    "[SYSTEM] Ready for next card."
+  );
+
+  Serial.println();
 }
