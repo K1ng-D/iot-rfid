@@ -21,6 +21,10 @@ export default function LogsPage() {
 
   const [loading, setLoading] = useState(true);
 
+  // ==========================================================
+  // LOAD LOGS
+  // ==========================================================
+
   const loadLogs = useCallback(async () => {
     try {
       const response = await fetch("/api/logs", {
@@ -30,10 +34,16 @@ export default function LogsPage() {
       const data = await response.json();
 
       setLogs(data.logs ?? []);
+    } catch (error) {
+      console.error("[LOGS]", error);
     } finally {
       setLoading(false);
     }
   }, []);
+
+  // ==========================================================
+  // POLLING
+  // ==========================================================
 
   useEffect(() => {
     void loadLogs();
@@ -44,6 +54,10 @@ export default function LogsPage() {
 
     return () => window.clearInterval(interval);
   }, [loadLogs]);
+
+  // ==========================================================
+  // FILTER
+  // ==========================================================
 
   const filteredLogs = useMemo(() => {
     const keyword = search.trim().toLowerCase();
@@ -56,23 +70,29 @@ export default function LogsPage() {
         [
           log.uid,
           log.employeeName ?? "",
-          log.deviceId,
           log.code,
           log.message,
+          log.readerType ?? "",
         ].some((value) => value.toLowerCase().includes(keyword));
 
       return matchResult && matchSearch;
     });
   }, [logs, search, resultFilter]);
 
+  // ==========================================================
+  // UI
+  // ==========================================================
+
   return (
     <div className="mx-auto max-w-[1500px]">
       <p className="max-w-2xl text-sm leading-6 text-slate-500">
-        Riwayat komunikasi reader RFID dengan sistem. Gunakan halaman ini untuk
+        Riwayat aktivitas reader RFID dengan sistem. Gunakan halaman ini untuk
         monitoring dan troubleshooting.
       </p>
 
       <section className="mt-7 overflow-hidden rounded-[28px] border border-slate-200 bg-white">
+        {/* HEADER */}
+
         <div className="flex flex-col gap-4 border-b border-slate-100 p-5 lg:flex-row lg:items-center lg:justify-between lg:p-6">
           <div>
             <h2 className="text-lg font-black tracking-[-0.03em]">
@@ -83,6 +103,8 @@ export default function LogsPage() {
           </div>
 
           <div className="flex flex-col gap-3 sm:flex-row">
+            {/* SEARCH */}
+
             <div className="relative">
               <Search
                 size={16}
@@ -96,6 +118,8 @@ export default function LogsPage() {
                 className="h-11 w-full rounded-2xl border border-slate-200 bg-slate-50 pl-10 pr-4 text-sm font-semibold outline-none focus:border-slate-400 sm:w-64"
               />
             </div>
+
+            {/* FILTER */}
 
             <select
               value={resultFilter}
@@ -113,6 +137,8 @@ export default function LogsPage() {
           </div>
         </div>
 
+        {/* LOG LIST */}
+
         <div className="divide-y divide-slate-100">
           {filteredLogs.map((log) => {
             const Icon =
@@ -127,6 +153,8 @@ export default function LogsPage() {
                 key={log.id}
                 className="grid gap-4 p-5 transition hover:bg-slate-50/60 sm:grid-cols-[auto_1fr_auto] sm:items-center sm:p-6"
               >
+                {/* ICON */}
+
                 <div
                   className={[
                     "flex size-11 items-center justify-center rounded-2xl",
@@ -139,6 +167,8 @@ export default function LogsPage() {
                 >
                   <Icon size={18} />
                 </div>
+
+                {/* CONTENT */}
 
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
@@ -156,9 +186,15 @@ export default function LogsPage() {
                   <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-semibold text-slate-400">
                     <span>{log.employeeName ?? "Tanpa karyawan"}</span>
 
-                    <span>Device: {log.deviceId}</span>
+                    <span>
+                      {log.readerType === "registration"
+                        ? "Registration Reader"
+                        : "RFID Reader"}
+                    </span>
                   </div>
                 </div>
+
+                {/* TIME */}
 
                 <time className="text-xs font-bold text-slate-400 sm:text-right">
                   {log.createdAt
@@ -174,8 +210,10 @@ export default function LogsPage() {
           })}
         </div>
 
+        {/* EMPTY */}
+
         {!loading && filteredLogs.length === 0 && (
-          <div className="flex min-h-72 flex-col items-center justify-center text-center">
+          <div className="flex min-h-72 flex-col items-center justify-center p-8 text-center">
             <Activity size={32} className="text-slate-300" />
 
             <p className="mt-4 font-black">Belum ada aktivitas</p>

@@ -29,15 +29,27 @@ export default function RegistrationPage() {
 
   const [error, setError] = useState("");
 
+  // ==========================================================
+  // EMPLOYEES
+  // ==========================================================
+
   const loadEmployees = useCallback(async () => {
-    const response = await fetch("/api/employees", {
-      cache: "no-store",
-    });
+    try {
+      const response = await fetch("/api/employees", {
+        cache: "no-store",
+      });
 
-    const data = await response.json();
+      const data = await response.json();
 
-    setEmployees(data.employees ?? []);
+      setEmployees(data.employees ?? []);
+    } catch (fetchError) {
+      console.error("[REGISTRATION EMPLOYEES]", fetchError);
+    }
   }, []);
+
+  // ==========================================================
+  // ACTIVE SESSION
+  // ==========================================================
 
   const loadActiveSession = useCallback(async () => {
     try {
@@ -52,21 +64,25 @@ export default function RegistrationPage() {
 
         setSelectedEmployeeId(data.session.employeeId);
       }
+    } catch (fetchError) {
+      console.error("[ACTIVE SESSION]", fetchError);
     } finally {
       setLoading(false);
     }
   }, []);
 
+  // ==========================================================
+  // INITIAL DATA
+  // ==========================================================
+
   useEffect(() => {
     void Promise.all([loadEmployees(), loadActiveSession()]);
   }, [loadEmployees, loadActiveSession]);
 
-  /*
-   * Polling session.
-   *
-   * Website tetap menggunakan API,
-   * bukan Firestore client langsung.
-   */
+  // ==========================================================
+  // SESSION POLLING
+  // ==========================================================
+
   useEffect(() => {
     if (!session?.id || session.status !== "waiting") {
       return;
@@ -91,12 +107,16 @@ export default function RegistrationPage() {
           }
         }
       } catch (pollError) {
-        console.error(pollError);
+        console.error("[REGISTRATION POLLING]", pollError);
       }
     }, 1200);
 
     return () => window.clearInterval(interval);
   }, [session?.id, session?.status, loadEmployees]);
+
+  // ==========================================================
+  // AVAILABLE EMPLOYEES
+  // ==========================================================
 
   const availableEmployees = useMemo(
     () =>
@@ -108,6 +128,10 @@ export default function RegistrationPage() {
 
   const selectedEmployee =
     employees.find((employee) => employee.id === selectedEmployeeId) ?? null;
+
+  // ==========================================================
+  // START
+  // ==========================================================
 
   async function startRegistration() {
     if (!selectedEmployeeId) {
@@ -160,27 +184,37 @@ export default function RegistrationPage() {
     }
   }
 
+  // ==========================================================
+  // CANCEL
+  // ==========================================================
+
   async function cancelRegistration() {
     if (!session?.id) {
       return;
     }
 
-    await fetch("/api/registration/cancel", {
-      method: "POST",
+    try {
+      await fetch("/api/registration/cancel", {
+        method: "POST",
 
-      headers: {
-        "Content-Type": "application/json",
-      },
+        headers: {
+          "Content-Type": "application/json",
+        },
 
-      body: JSON.stringify({
-        sessionId: session.id,
-      }),
-    });
+        body: JSON.stringify({
+          sessionId: session.id,
+        }),
+      });
+    } finally {
+      setSession(null);
 
-    setSession(null);
-
-    setError("");
+      setError("");
+    }
   }
+
+  // ==========================================================
+  // RESET
+  // ==========================================================
 
   function resetRegistration() {
     setSession(null);
@@ -192,6 +226,10 @@ export default function RegistrationPage() {
     void loadEmployees();
   }
 
+  // ==========================================================
+  // LOADING
+  // ==========================================================
+
   if (loading) {
     return (
       <div className="flex min-h-[60vh] items-center justify-center">
@@ -200,9 +238,15 @@ export default function RegistrationPage() {
     );
   }
 
+  // ==========================================================
+  // UI
+  // ==========================================================
+
   return (
     <div className="mx-auto max-w-6xl">
       <div className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
+        {/* LEFT */}
+
         <section className="rounded-[30px] border border-slate-200 bg-white p-6 sm:p-8">
           <div className="flex size-12 items-center justify-center rounded-2xl bg-slate-950 text-white">
             <UserRound size={20} />
@@ -241,6 +285,8 @@ export default function RegistrationPage() {
             </select>
           </label>
 
+          {/* SELECTED EMPLOYEE */}
+
           {selectedEmployee && (
             <div className="mt-4 rounded-[22px] bg-slate-50 p-5">
               <div className="flex items-center gap-4">
@@ -260,6 +306,8 @@ export default function RegistrationPage() {
             </div>
           )}
 
+          {/* ERROR */}
+
           {error && (
             <div className="mt-4 flex items-start gap-3 rounded-2xl bg-rose-50 p-4 text-sm font-semibold text-rose-600">
               <CircleAlert size={18} className="mt-0.5 shrink-0" />
@@ -267,6 +315,8 @@ export default function RegistrationPage() {
               {error}
             </div>
           )}
+
+          {/* START */}
 
           {!session && (
             <button
@@ -283,6 +333,8 @@ export default function RegistrationPage() {
             </button>
           )}
 
+          {/* CANCEL */}
+
           {session?.status === "waiting" && (
             <button
               onClick={() => void cancelRegistration()}
@@ -294,10 +346,14 @@ export default function RegistrationPage() {
           )}
         </section>
 
+        {/* RIGHT */}
+
         <section className="relative flex min-h-[520px] overflow-hidden rounded-[30px] bg-[#0b1220] p-7 text-white sm:p-10">
           <div className="absolute -right-32 -top-32 size-96 rounded-full bg-blue-500/10 blur-3xl" />
 
           <div className="absolute -bottom-32 -left-32 size-96 rounded-full bg-emerald-500/10 blur-3xl" />
+
+          {/* IDLE */}
 
           {!session && (
             <div className="relative z-10 m-auto flex max-w-sm flex-col items-center text-center">
@@ -323,6 +379,8 @@ export default function RegistrationPage() {
             </div>
           )}
 
+          {/* WAITING */}
+
           {session?.status === "waiting" && (
             <div className="relative z-10 m-auto flex w-full max-w-md flex-col items-center text-center">
               <div className="relative flex size-56 items-center justify-center">
@@ -347,7 +405,7 @@ export default function RegistrationPage() {
               </h2>
 
               <p className="mt-3 text-sm leading-6 text-slate-500">
-                Reader REG-001 sedang menunggu kartu untuk
+                Registration Reader sedang menunggu kartu untuk
               </p>
 
               <p className="mt-1 text-sm font-black text-white">
@@ -355,6 +413,8 @@ export default function RegistrationPage() {
               </p>
             </div>
           )}
+
+          {/* COMPLETED */}
 
           {session?.status === "completed" && (
             <div className="relative z-10 m-auto flex max-w-md flex-col items-center text-center">
@@ -395,6 +455,8 @@ export default function RegistrationPage() {
               </button>
             </div>
           )}
+
+          {/* CANCELLED / FAILED */}
 
           {session && ["cancelled", "failed"].includes(session.status) && (
             <div className="relative z-10 m-auto flex max-w-sm flex-col items-center text-center">

@@ -54,13 +54,25 @@ export async function POST(request: Request) {
       );
     }
 
+    // ========================================================
+    // REFERENCES
+    // ========================================================
+
     const employeeRef = doc(db, "employees", employeeId);
 
     const controlRef = doc(db, "system", "rfid-registration");
 
     const sessionRef = doc(collection(db, "registrationSessions"));
 
+    // ========================================================
+    // TRANSACTION
+    // ========================================================
+
     await runTransaction(db, async (transaction) => {
+      // ====================================================
+      // EMPLOYEE
+      // ====================================================
+
       const employeeSnapshot = await transaction.get(employeeRef);
 
       if (!employeeSnapshot.exists()) {
@@ -73,6 +85,10 @@ export async function POST(request: Request) {
 
       const employee = employeeSnapshot.data();
 
+      // ====================================================
+      // EMPLOYEE ALREADY HAS RFID
+      // ====================================================
+
       if (typeof employee.rfidUid === "string" && employee.rfidUid) {
         throw new RegistrationError(
           409,
@@ -81,6 +97,10 @@ export async function POST(request: Request) {
         );
       }
 
+      // ====================================================
+      // EMPLOYEE STATUS
+      // ====================================================
+
       if (employee.status !== "active") {
         throw new RegistrationError(
           409,
@@ -88,6 +108,10 @@ export async function POST(request: Request) {
           "Karyawan sedang tidak aktif.",
         );
       }
+
+      // ====================================================
+      // CHECK CURRENT SESSION
+      // ====================================================
 
       const controlSnapshot = await transaction.get(controlRef);
 
@@ -116,6 +140,10 @@ export async function POST(request: Request) {
         }
       }
 
+      // ====================================================
+      // CREATE SESSION
+      // ====================================================
+
       transaction.set(sessionRef, {
         employeeId: employeeSnapshot.id,
 
@@ -127,8 +155,6 @@ export async function POST(request: Request) {
 
         uid: null,
 
-        deviceId: null,
-
         createdAt: serverTimestamp(),
 
         updatedAt: serverTimestamp(),
@@ -137,6 +163,10 @@ export async function POST(request: Request) {
 
         cancelledAt: null,
       });
+
+      // ====================================================
+      // SET ACTIVE SESSION
+      // ====================================================
 
       transaction.set(
         controlRef,
@@ -150,6 +180,10 @@ export async function POST(request: Request) {
         },
       );
     });
+
+    // ========================================================
+    // RESPONSE
+    // ========================================================
 
     return NextResponse.json(
       {

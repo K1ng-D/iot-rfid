@@ -4,12 +4,18 @@ import { doc, serverTimestamp, setDoc } from "firebase/firestore";
 
 import { db } from "@/lib/firebase";
 
-import { authenticateDevice } from "@/lib/device-auth";
-
 import { sanitizeText, sanitizeWifiRssi } from "@/lib/rfid";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+/**
+ * Nama document Firestore ini HANYA internal database.
+ *
+ * ESP32 tidak mengetahui nilai ini.
+ * Ini bukan Device ID dan bukan credential.
+ */
+const READER_DOCUMENT = "registration-reader";
 
 interface HeartbeatBody {
   type?: unknown;
@@ -23,28 +29,29 @@ interface HeartbeatBody {
 
 export async function POST(request: Request) {
   try {
-    const auth = await authenticateDevice(request);
-
-    if (!auth.ok) {
-      return NextResponse.json(
-        {
-          success: false,
-
-          code: auth.code,
-
-          message: auth.message,
-        },
-        {
-          status: auth.status,
-        },
-      );
-    }
-
     const body = (await request.json()) as HeartbeatBody;
+
+    // ========================================================
+    // READER TYPE
+    // ========================================================
+
+    const readerType = sanitizeText(body.type, 40) || "registration";
+
+    // ========================================================
+    // FIRMWARE
+    // ========================================================
 
     const firmwareVersion = sanitizeText(body.firmwareVersion, 40);
 
+    // ========================================================
+    // WIFI RSSI
+    // ========================================================
+
     const wifiRssi = sanitizeWifiRssi(body.wifiRssi);
+
+    // ========================================================
+    // UPTIME
+    // ========================================================
 
     const uptimeSeconds =
       typeof body.uptimeSeconds === "number" &&
@@ -52,14 +59,26 @@ export async function POST(request: Request) {
         ? Math.max(0, Math.floor(body.uptimeSeconds))
         : null;
 
+    // ========================================================
+    // FIRESTORE
+    // ========================================================
+
+    const readerRef = doc(db, "devices", READER_DOCUMENT);
+
     await setDoc(
-      doc(db, "devices", auth.deviceId),
+      readerRef,
       {
+        name: "Registration Reader",
+
+        type: readerType,
+
         firmwareVersion: firmwareVersion || null,
 
         wifiRssi,
 
         uptimeSeconds,
+
+        status: "online",
 
         lastSeenAt: serverTimestamp(),
 
@@ -69,6 +88,10 @@ export async function POST(request: Request) {
         merge: true,
       },
     );
+
+    // ========================================================
+    // RESPONSE
+    // ========================================================
 
     return NextResponse.json({
       success: true,

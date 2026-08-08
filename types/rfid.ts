@@ -19,19 +19,23 @@ export interface Employee {
 }
 
 export interface RfidDevice {
+  /**
+   * Hanya digunakan sebagai internal React key.
+   * BUKAN Device ID dari ESP32.
+   */
   id: string;
-
-  deviceId: string;
 
   name: string;
 
   type: string;
 
-  enabled: boolean;
-
   firmwareVersion: string | null;
 
   wifiRssi: number | null;
+
+  uptimeSeconds?: number | null;
+
+  status?: string | null;
 
   lastSeenAt: string | null;
 
@@ -53,9 +57,9 @@ export interface RegistrationSession {
 
   uid: string | null;
 
-  deviceId: string | null;
-
   createdAt: string | null;
+
+  updatedAt?: string | null;
 
   completedAt: string | null;
 
@@ -67,9 +71,7 @@ export interface ScanLog {
 
   uid: string;
 
-  deviceId: string;
-
-  deviceType: string;
+  readerType?: string | null;
 
   action: string;
 

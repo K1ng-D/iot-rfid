@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { collection, getDocs } from "firebase/firestore";
+import { doc, getDoc } from "firebase/firestore";
 
 import { db } from "@/lib/firebase";
 
@@ -9,32 +9,38 @@ import { serializeFirestoreValue } from "@/lib/firestore-json";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const READER_DOCUMENT = "registration-reader";
+
 export async function GET() {
   try {
-    const snapshot = await getDocs(collection(db, "devices"));
+    const readerRef = doc(db, "devices", READER_DOCUMENT);
 
-    const devices = snapshot.docs.map((document) => {
-      const data = document.data();
+    const snapshot = await getDoc(readerRef);
 
+    if (!snapshot.exists()) {
+      return NextResponse.json({
+        success: true,
+
+        devices: [],
+      });
+    }
+
+    const data = snapshot.data();
+
+    const reader = {
       /*
-       * JANGAN pernah kirim secret
-       * device ke frontend.
+       * Internal React key.
+       * Tidak ditampilkan sebagai Device ID.
        */
-      const { secret: _secret, ...safeData } = data;
+      id: "registration-reader",
 
-      void _secret;
-
-      return {
-        id: document.id,
-
-        ...(serializeFirestoreValue(safeData) as Record<string, unknown>),
-      };
-    });
+      ...(serializeFirestoreValue(data) as Record<string, unknown>),
+    };
 
     return NextResponse.json({
       success: true,
 
-      devices,
+      devices: [reader],
     });
   } catch (error) {
     console.error("[DEVICES]", error);

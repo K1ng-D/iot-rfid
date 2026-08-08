@@ -14,6 +14,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type { Employee, RfidDevice, ScanLog } from "@/types/rfid";
 
+// ============================================================
+// HELPERS
+// ============================================================
+
 function formatTime(value: string | null) {
   if (!value) {
     return "-";
@@ -45,6 +49,10 @@ function isDeviceOnline(lastSeenAt: string | null) {
     return false;
   }
 
+  /*
+   * Heartbeat ESP32 setiap 60 detik.
+   * Kita beri toleransi 130 detik.
+   */
   return Date.now() - timestamp < 130_000;
 }
 
@@ -68,6 +76,10 @@ function wifiLabel(rssi: number | null) {
   return "Weak";
 }
 
+// ============================================================
+// PAGE
+// ============================================================
+
 export default function DashboardPage() {
   const [employees, setEmployees] = useState<Employee[]>([]);
 
@@ -76,6 +88,10 @@ export default function DashboardPage() {
   const [logs, setLogs] = useState<ScanLog[]>([]);
 
   const [loading, setLoading] = useState(true);
+
+  // ==========================================================
+  // LOAD DATA
+  // ==========================================================
 
   const loadData = useCallback(async () => {
     try {
@@ -106,11 +122,15 @@ export default function DashboardPage() {
 
       setLogs(logsJson.logs ?? []);
     } catch (error) {
-      console.error(error);
+      console.error("[DASHBOARD]", error);
     } finally {
       setLoading(false);
     }
   }, []);
+
+  // ==========================================================
+  // POLLING
+  // ==========================================================
 
   useEffect(() => {
     void loadData();
@@ -121,6 +141,10 @@ export default function DashboardPage() {
 
     return () => window.clearInterval(interval);
   }, [loadData]);
+
+  // ==========================================================
+  // CALCULATIONS
+  // ==========================================================
 
   const registeredCount = useMemo(
     () => employees.filter((employee) => Boolean(employee.rfidUid)).length,
@@ -168,11 +192,11 @@ export default function DashboardPage() {
     },
 
     {
-      title: "Perangkat Online",
+      title: "Reader Online",
 
       value: `${onlineDevices}/${devices.length}`,
 
-      description: "Heartbeat aktif",
+      description: "Heartbeat reader",
 
       icon: Cpu,
     },
@@ -188,14 +212,19 @@ export default function DashboardPage() {
     },
   ];
 
+  // ==========================================================
+  // UI
+  // ==========================================================
+
   return (
     <div className="mx-auto max-w-[1500px]">
       <section className="mb-7">
         <p className="max-w-2xl text-sm leading-6 text-slate-500">
-          Pantau perangkat, registrasi kartu, dan aktivitas RFID dari satu
-          tempat.
+          Pantau reader, registrasi kartu, dan aktivitas RFID dari satu tempat.
         </p>
       </section>
+
+      {/* STATISTICS */}
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {cards.map((card) => {
@@ -233,20 +262,24 @@ export default function DashboardPage() {
       </div>
 
       <div className="mt-6 grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
+        {/* READER HEALTH */}
+
         <section className="overflow-hidden rounded-[28px] bg-[#0b1220] p-6 text-white shadow-[0_24px_60px_rgba(15,23,42,0.12)] sm:p-7">
           <div className="flex flex-col gap-5 border-b border-white/10 pb-6 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-[0.14em] text-slate-500">
                 <Radio size={14} />
-                Device Health
+                Reader Health
               </div>
 
               <h2 className="mt-2 text-xl font-black tracking-[-0.03em]">
                 {primaryDevice?.name ?? "Registration Reader"}
               </h2>
 
-              <p className="mt-1 text-xs text-slate-500">
-                {primaryDevice?.deviceId ?? "Belum ada perangkat"}
+              <p className="mt-1 text-xs font-semibold capitalize text-slate-500">
+                {primaryDevice?.type === "registration"
+                  ? "RFID Registration Reader"
+                  : (primaryDevice?.type ?? "Belum terhubung")}
               </p>
             </div>
 
@@ -270,6 +303,8 @@ export default function DashboardPage() {
           </div>
 
           <div className="grid gap-3 pt-6 sm:grid-cols-2">
+            {/* WIFI */}
+
             <div className="rounded-2xl border border-white/8 bg-white/[0.04] p-4">
               <div className="flex items-center gap-2 text-xs text-slate-500">
                 <Wifi size={14} />
@@ -288,6 +323,8 @@ export default function DashboardPage() {
               </p>
             </div>
 
+            {/* FIRMWARE */}
+
             <div className="rounded-2xl border border-white/8 bg-white/[0.04] p-4">
               <div className="flex items-center gap-2 text-xs text-slate-500">
                 <Cpu size={14} />
@@ -299,10 +336,12 @@ export default function DashboardPage() {
               </div>
 
               <p className="mt-1 text-xs font-semibold text-slate-500">
-                ESP32 Device
+                ESP32 + RC522
               </p>
             </div>
           </div>
+
+          {/* HEARTBEAT */}
 
           <div className="mt-3 rounded-2xl border border-white/8 bg-white/[0.04] p-4">
             <p className="text-xs font-semibold text-slate-500">
@@ -320,6 +359,8 @@ export default function DashboardPage() {
             </p>
           </div>
         </section>
+
+        {/* ACTIVITY */}
 
         <section className="rounded-[28px] border border-slate-200/80 bg-white p-6 shadow-[0_12px_40px_rgba(15,23,42,0.04)] sm:p-7">
           <div className="flex items-center justify-between">

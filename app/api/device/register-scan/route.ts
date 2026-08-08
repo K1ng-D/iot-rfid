@@ -9,8 +9,6 @@ import {
 
 import { db } from "@/lib/firebase";
 
-import { authenticateDevice } from "@/lib/device-auth";
-
 import {
   isValidRfidUid,
   normalizeRfidUid,
@@ -21,12 +19,24 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/**
+ * Internal Firestore document key.
+ *
+ * Ini bukan Device ID.
+ * Tidak dikirim oleh ESP32.
+ */
+const READER_DOCUMENT = "registration-reader";
+
 interface RegisterScanBody {
   uid?: unknown;
+
+  type?: unknown;
 
   firmwareVersion?: unknown;
 
   wifiRssi?: unknown;
+
+  uptimeSeconds?: unknown;
 }
 
 type RegistrationResult =
@@ -40,6 +50,8 @@ type RegistrationResult =
     }
   | {
       type: "duplicate";
+
+      employeeName: string | null;
     }
   | {
       type: "invalid_session";
@@ -53,36 +65,15 @@ type RegistrationResult =
 
 export async function POST(request: Request) {
   try {
-    /*
-     * =========================================
-     * DEVICE AUTHENTICATION
-     * =========================================
-     */
-
-    const auth = await authenticateDevice(request);
-
-    if (!auth.ok) {
-      return NextResponse.json(
-        {
-          success: false,
-
-          code: auth.code,
-
-          message: auth.message,
-        },
-        {
-          status: auth.status,
-        },
-      );
-    }
-
-    /*
-     * =========================================
-     * REQUEST BODY
-     * =========================================
-     */
+    // ========================================================
+    // REQUEST BODY
+    // ========================================================
 
     const body = (await request.json()) as RegisterScanBody;
+
+    // ========================================================
+    // RFID UID
+    // ========================================================
 
     const uid = normalizeRfidUid(body.uid);
 
@@ -101,47 +92,84 @@ export async function POST(request: Request) {
       );
     }
 
+    // ========================================================
+    // READER INFORMATION
+    // ========================================================
+
+    const readerType = sanitizeText(body.type, 40) || "registration";
+
     const firmwareVersion = sanitizeText(body.firmwareVersion, 40);
 
     const wifiRssi = sanitizeWifiRssi(body.wifiRssi);
 
-    /*
-     * =========================================
-     * FIRESTORE REFERENCES
-     * =========================================
-     */
+    const uptimeSeconds =
+      typeof body.uptimeSeconds === "number" &&
+      Number.isFinite(body.uptimeSeconds)
+        ? Math.max(0, Math.floor(body.uptimeSeconds))
+        : null;
+
+    // ========================================================
+    // REFERENCES
+    // ========================================================
 
     const controlRef = doc(db, "system", "rfid-registration");
 
-    const deviceRef = doc(db, "devices", auth.deviceId);
+    const readerRef = doc(db, "devices", READER_DOCUMENT);
 
     const logRef = doc(collection(db, "scanLogs"));
 
-    /*
-     * =========================================
-     * TRANSACTION
-     * =========================================
-     */
+    // ========================================================
+    // READER STATUS
+    // ========================================================
+
+    const readerStatus = {
+      name: "Registration Reader",
+
+      type: readerType,
+
+      firmwareVersion: firmwareVersion || null,
+
+      wifiRssi,
+
+      uptimeSeconds,
+
+      status: "online",
+
+      lastSeenAt: serverTimestamp(),
+
+      updatedAt: serverTimestamp(),
+    };
+
+    // ========================================================
+    // FIRESTORE TRANSACTION
+    // ========================================================
 
     const result = await runTransaction<RegistrationResult>(
       db,
       async (transaction) => {
+        // ==================================================
+        // ACTIVE REGISTRATION CONTROL
+        // ==================================================
+
         const controlSnapshot = await transaction.get(controlRef);
 
         const activeSessionId = controlSnapshot.exists()
           ? controlSnapshot.data().activeSessionId
           : null;
 
-        /*
-         * Tidak ada sesi registrasi.
-         */
+        // ==================================================
+        // NO ACTIVE SESSION
+        // ==================================================
+
         if (typeof activeSessionId !== "string" || !activeSessionId) {
+          transaction.set(readerRef, readerStatus, {
+            merge: true,
+          });
+
           transaction.set(logRef, {
             uid,
 
-            deviceId: auth.deviceId,
-
-            deviceType: auth.device.type ?? "registration",
+            readerType,
 
             action: "register",
 
@@ -158,38 +186,31 @@ export async function POST(request: Request) {
             createdAt: serverTimestamp(),
           });
 
-          transaction.set(
-            deviceRef,
-            {
-              firmwareVersion: firmwareVersion || null,
-
-              wifiRssi,
-
-              lastSeenAt: serverTimestamp(),
-
-              updatedAt: serverTimestamp(),
-            },
-            {
-              merge: true,
-            },
-          );
-
           return {
             type: "no_active_session",
           };
         }
 
-        /*
-         * Ambil session.
-         */
+        // ==================================================
+        // REGISTRATION SESSION
+        // ==================================================
+
         const sessionRef = doc(db, "registrationSessions", activeSessionId);
 
         const sessionSnapshot = await transaction.get(sessionRef);
+
+        // ==================================================
+        // INVALID SESSION
+        // ==================================================
 
         if (
           !sessionSnapshot.exists() ||
           sessionSnapshot.data().status !== "waiting"
         ) {
+          transaction.set(readerRef, readerStatus, {
+            merge: true,
+          });
+
           transaction.set(
             controlRef,
             {
@@ -205,9 +226,7 @@ export async function POST(request: Request) {
           transaction.set(logRef, {
             uid,
 
-            deviceId: auth.deviceId,
-
-            deviceType: auth.device.type ?? "registration",
+            readerType,
 
             action: "register",
 
@@ -236,22 +255,33 @@ export async function POST(request: Request) {
             ? sessionData.employeeId
             : "";
 
+        // ==================================================
+        // REFERENCES
+        // ==================================================
+
         const employeeRef = doc(db, "employees", employeeId);
 
         const cardRef = doc(db, "rfidCards", uid);
 
         /*
-         * Semua read harus dilakukan
-         * sebelum write transaction.
+         * Penting:
+         * seluruh READ transaction dilakukan
+         * sebelum WRITE berikutnya.
          */
+
         const employeeSnapshot = await transaction.get(employeeRef);
 
         const cardSnapshot = await transaction.get(cardRef);
 
-        /*
-         * Employee tidak ditemukan.
-         */
+        // ==================================================
+        // EMPLOYEE NOT FOUND
+        // ==================================================
+
         if (!employeeSnapshot.exists()) {
+          transaction.set(readerRef, readerStatus, {
+            merge: true,
+          });
+
           transaction.update(sessionRef, {
             status: "failed",
 
@@ -275,9 +305,7 @@ export async function POST(request: Request) {
           transaction.set(logRef, {
             uid,
 
-            deviceId: auth.deviceId,
-
-            deviceType: auth.device.type ?? "registration",
+            readerType,
 
             action: "register",
 
@@ -301,16 +329,31 @@ export async function POST(request: Request) {
 
         const employee = employeeSnapshot.data();
 
-        /*
-         * UID sudah dimiliki kartu lain.
-         */
+        // ==================================================
+        // CARD ALREADY REGISTERED
+        // ==================================================
+
         if (cardSnapshot.exists()) {
+          const existingCard = cardSnapshot.data();
+
+          const existingEmployeeName =
+            typeof existingCard.employeeName === "string"
+              ? existingCard.employeeName
+              : null;
+
+          const existingEmployeeId =
+            typeof existingCard.employeeId === "string"
+              ? existingCard.employeeId
+              : null;
+
+          transaction.set(readerRef, readerStatus, {
+            merge: true,
+          });
+
           transaction.set(logRef, {
             uid,
 
-            deviceId: auth.deviceId,
-
-            deviceType: auth.device.type ?? "registration",
+            readerType,
 
             action: "register",
 
@@ -318,47 +361,37 @@ export async function POST(request: Request) {
 
             code: "CARD_ALREADY_REGISTERED",
 
-            employeeId: employeeSnapshot.id,
+            employeeId: existingEmployeeId,
 
-            employeeName: employee.name ?? null,
+            employeeName: existingEmployeeName,
 
-            message: "Kartu RFID sudah terdaftar.",
+            message: existingEmployeeName
+              ? `Kartu RFID sudah terdaftar atas nama ${existingEmployeeName}.`
+              : "Kartu RFID sudah terdaftar.",
 
             createdAt: serverTimestamp(),
           });
 
-          transaction.set(
-            deviceRef,
-            {
-              firmwareVersion: firmwareVersion || null,
-
-              wifiRssi,
-
-              lastSeenAt: serverTimestamp(),
-
-              updatedAt: serverTimestamp(),
-            },
-            {
-              merge: true,
-            },
-          );
-
           return {
             type: "duplicate",
+
+            employeeName: existingEmployeeName,
           };
         }
 
-        /*
-         * Employee ternyata sudah punya
-         * RFID lain.
-         */
+        // ==================================================
+        // EMPLOYEE ALREADY HAS CARD
+        // ==================================================
+
         if (typeof employee.rfidUid === "string" && employee.rfidUid) {
+          transaction.set(readerRef, readerStatus, {
+            merge: true,
+          });
+
           transaction.set(logRef, {
             uid,
 
-            deviceId: auth.deviceId,
-
-            deviceType: auth.device.type ?? "registration",
+            readerType,
 
             action: "register",
 
@@ -380,11 +413,9 @@ export async function POST(request: Request) {
           };
         }
 
-        /*
-         * =================================
-         * REGISTRATION SUCCESS
-         * =================================
-         */
+        // ==================================================
+        // CREATE RFID CARD
+        // ==================================================
 
         transaction.set(cardRef, {
           uid,
@@ -397,12 +428,14 @@ export async function POST(request: Request) {
 
           status: "active",
 
-          registeredByDevice: auth.deviceId,
-
           registeredAt: serverTimestamp(),
 
           updatedAt: serverTimestamp(),
         });
+
+        // ==================================================
+        // UPDATE EMPLOYEE
+        // ==================================================
 
         transaction.update(employeeRef, {
           rfidUid: uid,
@@ -410,17 +443,23 @@ export async function POST(request: Request) {
           updatedAt: serverTimestamp(),
         });
 
+        // ==================================================
+        // COMPLETE SESSION
+        // ==================================================
+
         transaction.update(sessionRef, {
           status: "completed",
 
           uid,
 
-          deviceId: auth.deviceId,
-
           completedAt: serverTimestamp(),
 
           updatedAt: serverTimestamp(),
         });
+
+        // ==================================================
+        // CLEAR ACTIVE SESSION
+        // ==================================================
 
         transaction.set(
           controlRef,
@@ -436,28 +475,22 @@ export async function POST(request: Request) {
           },
         );
 
-        transaction.set(
-          deviceRef,
-          {
-            firmwareVersion: firmwareVersion || null,
+        // ==================================================
+        // UPDATE READER
+        // ==================================================
 
-            wifiRssi,
+        transaction.set(readerRef, readerStatus, {
+          merge: true,
+        });
 
-            lastSeenAt: serverTimestamp(),
-
-            updatedAt: serverTimestamp(),
-          },
-          {
-            merge: true,
-          },
-        );
+        // ==================================================
+        // CREATE LOG
+        // ==================================================
 
         transaction.set(logRef, {
           uid,
 
-          deviceId: auth.deviceId,
-
-          deviceType: auth.device.type ?? "registration",
+          readerType,
 
           action: "register",
 
@@ -474,6 +507,10 @@ export async function POST(request: Request) {
           createdAt: serverTimestamp(),
         });
 
+        // ==================================================
+        // SUCCESS
+        // ==================================================
+
         return {
           type: "success",
 
@@ -482,11 +519,9 @@ export async function POST(request: Request) {
       },
     );
 
-    /*
-     * =========================================
-     * RESPONSE
-     * =========================================
-     */
+    // ========================================================
+    // RESPONSE
+    // ========================================================
 
     switch (result.type) {
       case "success":
@@ -519,7 +554,9 @@ export async function POST(request: Request) {
 
             code: "CARD_ALREADY_REGISTERED",
 
-            message: "Kartu RFID sudah terdaftar.",
+            message: result.employeeName
+              ? `Kartu RFID sudah terdaftar atas nama ${result.employeeName}.`
+              : "Kartu RFID sudah terdaftar.",
           },
           {
             status: 409,
@@ -554,6 +591,7 @@ export async function POST(request: Request) {
           },
         );
 
+      case "invalid_session":
       default:
         return NextResponse.json(
           {
