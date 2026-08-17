@@ -2,162 +2,289 @@
 
 import {
   Activity,
+  BarChart3,
   CalendarCheck2,
   Cpu,
+  CreditCard,
   LayoutDashboard,
+  LogOut,
   Menu,
-  Radio,
   ScanLine,
+  Settings,
   Users,
   X,
 } from "lucide-react";
 
+import { signOut } from "firebase/auth";
+
+import { auth } from "@/lib/firebase-auth";
+import Image from "next/image";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
 
-const menuItems = [
+// ============================================================
+// MENU
+// ============================================================
+
+const menuGroups = [
   {
-    href: "/dashboard",
-    label: "Dashboard",
-    icon: LayoutDashboard,
+    label: "Overview",
+
+    items: [
+      {
+        href: "/dashboard",
+        label: "Dashboard",
+        icon: LayoutDashboard,
+      },
+    ],
   },
+
   {
-    href: "/employees",
-    label: "Karyawan",
-    icon: Users,
+    label: "Kepegawaian",
+
+    items: [
+      {
+        href: "/employees",
+        label: "Karyawan",
+        icon: Users,
+      },
+    ],
   },
+
   {
-    href: "/attendance",
-    label: "Absensi",
-    icon: CalendarCheck2,
+    label: "RFID",
+
+    items: [
+      {
+        href: "/registration",
+        label: "Registrasi RFID",
+        icon: ScanLine,
+      },
+
+      {
+        href: "/rfid-cards",
+        label: "Kartu RFID",
+        icon: CreditCard,
+      },
+
+      {
+        href: "/devices",
+        label: "Perangkat",
+        icon: Cpu,
+      },
+    ],
   },
+
   {
-    href: "/registration",
-    label: "Registrasi RFID",
-    icon: ScanLine,
+    label: "Kehadiran",
+
+    items: [
+      {
+        href: "/attendance",
+        label: "Absensi",
+        icon: CalendarCheck2,
+      },
+
+      {
+        href: "/logs",
+        label: "Riwayat Scan",
+        icon: Activity,
+      },
+
+      {
+        href: "/reports",
+        label: "Laporan",
+        icon: BarChart3,
+      },
+    ],
   },
+
   {
-    href: "/devices",
-    label: "Perangkat",
-    icon: Cpu,
-  },
-  {
-    href: "/logs",
-    label: "Riwayat Scan",
-    icon: Activity,
+    label: "Sistem",
+
+    items: [
+      {
+        href: "/settings",
+        label: "Pengaturan",
+        icon: Settings,
+      },
+    ],
   },
 ];
+
+const menuItems = menuGroups.flatMap((group) => group.items);
+
+// ============================================================
+// TYPES
+// ============================================================
 
 interface DashboardShellProps {
   children: React.ReactNode;
 }
 
+// ============================================================
+// COMPONENT
+// ============================================================
+
 export default function DashboardShell({ children }: DashboardShellProps) {
   const pathname = usePathname();
+  const router = useRouter();
+
+  async function handleLogout() {
+    await signOut(auth);
+
+    router.replace("/login");
+    router.refresh();
+  }
 
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+
+  // ==========================================================
+  // CURRENT MENU
+  // ==========================================================
 
   const currentMenu = menuItems.find(
     (menu) => pathname === menu.href || pathname.startsWith(`${menu.href}/`),
   );
 
+  // ==========================================================
+  // ACTIVE
+  // ==========================================================
+
+  function isMenuActive(href: string) {
+    return pathname === href || pathname.startsWith(`${href}/`);
+  }
+
+  // ==========================================================
+  // UI
+  // ==========================================================
+
   return (
-    <div className="min-h-screen bg-[#f5f7fb] text-slate-950">
+    <div className="min-h-screen bg-[#f4f7fb] text-[#0f172a]">
+      {/* ===================================================== */}
       {/* MOBILE OVERLAY */}
+      {/* ===================================================== */}
+
       {mobileSidebarOpen && (
         <button
           type="button"
           aria-label="Tutup menu"
-          className="fixed inset-0 z-40 bg-slate-950/50 backdrop-blur-sm lg:hidden"
+          className="fixed inset-0 z-40 bg-[#081f36]/55 backdrop-blur-sm lg:hidden"
           onClick={() => setMobileSidebarOpen(false)}
         />
       )}
 
+      {/* ===================================================== */}
       {/* SIDEBAR */}
+      {/* ===================================================== */}
+
       <aside
         className={[
-          "fixed inset-y-0 left-0 z-50 flex w-[280px] flex-col bg-[#0b1220] text-white transition-transform duration-300",
+          "fixed inset-y-0 left-0 z-50 flex w-[280px] flex-col bg-[#0d2f53] text-white transition-transform duration-300",
+
           mobileSidebarOpen
             ? "translate-x-0"
             : "-translate-x-full lg:translate-x-0",
         ].join(" ")}
       >
+        {/* =================================================== */}
         {/* BRAND */}
-        <div className="flex h-24 items-center justify-between border-b border-white/10 px-7">
+        {/* =================================================== */}
+
+        <div className="flex h-24 shrink-0 items-center justify-between border-b border-[#274b6d] px-7">
           <Link
             href="/dashboard"
-            className="flex items-center gap-3"
+            className="flex items-center"
             onClick={() => setMobileSidebarOpen(false)}
           >
-            <div className="flex size-11 items-center justify-center rounded-2xl bg-white text-[#0b1220] shadow-xl shadow-black/20">
-              <Radio size={22} strokeWidth={2.3} />
-            </div>
-
-            <div>
-              <div className="text-[17px] font-black tracking-[-0.03em]">
-                NEXTY RFID
-              </div>
-
-              <div className="mt-0.5 text-[10px] font-semibold tracking-[0.18em] text-slate-500">
-                CONTROL CENTER
-              </div>
-            </div>
+            <Image
+              src="/images/nexty-labs-logo.png"
+              alt="Nexty Labs"
+              width={170}
+              height={68}
+              priority
+              className="h-auto w-[135px] object-contain"
+            />
           </Link>
 
           <button
             type="button"
             aria-label="Tutup sidebar"
-            className="flex size-10 items-center justify-center rounded-xl text-slate-400 transition hover:bg-white/10 hover:text-white lg:hidden"
+            className="flex size-10 items-center justify-center rounded-xl text-[#8ca9c2] transition hover:bg-white/10 hover:text-white lg:hidden"
             onClick={() => setMobileSidebarOpen(false)}
           >
             <X size={20} />
           </button>
         </div>
 
+        {/* =================================================== */}
         {/* MENU */}
-        <nav className="flex-1 space-y-1.5 overflow-y-auto px-4 py-7">
-          <div className="mb-3 px-3 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-600">
-            Workspace
+        {/* =================================================== */}
+
+        <nav className="flex-1 overflow-y-auto px-4 py-6 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+          <div className="space-y-7">
+            {menuGroups.map((group) => (
+              <div key={group.label}>
+                {/* GROUP TITLE */}
+
+                <div className="mb-2.5 px-3 text-[9px] font-black uppercase tracking-[0.19em] text-[#7193b2]">
+                  {group.label}
+                </div>
+
+                {/* ITEMS */}
+
+                <div className="space-y-1.5">
+                  {group.items.map((item) => {
+                    const Icon = item.icon;
+
+                    const active = isMenuActive(item.href);
+
+                    return (
+                      <Link
+                        key={item.href}
+                        href={item.href}
+                        onClick={() => setMobileSidebarOpen(false)}
+                        className={[
+                          "group flex items-center gap-3 rounded-2xl px-4 py-3 text-sm font-semibold transition",
+
+                          active
+                            ? "bg-[#007BFF] text-white shadow-lg shadow-[#007BFF]/25"
+                            : "text-[#d0deeb] hover:bg-white/10 hover:text-white",
+                        ].join(" ")}
+                      >
+                        <Icon
+                          size={18}
+                          strokeWidth={2.1}
+                          className={
+                            active
+                              ? "text-white"
+                              : "text-[#86a4bf] transition group-hover:text-white"
+                          }
+                        />
+
+                        <span className="min-w-0 flex-1 truncate">
+                          {item.label}
+                        </span>
+
+                        {active && (
+                          <span className="size-1.5 shrink-0 rounded-full bg-white" />
+                        )}
+                      </Link>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
           </div>
-
-          {menuItems.map((item) => {
-            const Icon = item.icon;
-
-            const active =
-              pathname === item.href || pathname.startsWith(`${item.href}/`);
-
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                onClick={() => setMobileSidebarOpen(false)}
-                className={[
-                  "group flex items-center gap-3 rounded-2xl px-4 py-3.5 text-sm font-semibold transition",
-                  active
-                    ? "bg-white text-slate-950 shadow-lg shadow-black/20"
-                    : "text-slate-400 hover:bg-white/10 hover:text-white",
-                ].join(" ")}
-              >
-                <Icon
-                  size={18}
-                  strokeWidth={2.1}
-                  className={
-                    active
-                      ? "text-slate-950"
-                      : "text-slate-500 transition group-hover:text-white"
-                  }
-                />
-
-                {item.label}
-              </Link>
-            );
-          })}
         </nav>
 
+        {/* =================================================== */}
         {/* SYSTEM STATUS */}
-        <div className="p-4">
-          <div className="rounded-[22px] border border-white/10 bg-white/[0.045] p-4">
+        {/* =================================================== */}
+
+        <div className="shrink-0 border-t border-[#274b6d] p-4">
+          <div className="rounded-[22px] border border-[#315372] bg-[#0a2948] p-4">
             <div className="flex items-center gap-3">
               <span className="relative flex size-3">
                 <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-60" />
@@ -165,52 +292,77 @@ export default function DashboardShell({ children }: DashboardShellProps) {
                 <span className="relative inline-flex size-3 rounded-full bg-emerald-400" />
               </span>
 
-              <div>
+              <div className="min-w-0">
                 <p className="text-xs font-bold text-white">System Running</p>
 
-                <p className="mt-0.5 text-[11px] text-slate-500">
-                  RFID Management
+                <p className="mt-0.5 truncate text-[11px] text-[#7f9fba]">
+                  RFID Attendance System
                 </p>
               </div>
             </div>
           </div>
+
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="mt-3 flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-sm font-semibold text-[#d0deeb] transition hover:bg-white/10 hover:text-white"
+          >
+            <LogOut size={18} className="text-[#86a4bf]" />
+
+            <span>Keluar</span>
+          </button>
         </div>
       </aside>
 
+      {/* ===================================================== */}
       {/* CONTENT */}
+      {/* ===================================================== */}
+
       <div className="lg:pl-[280px]">
+        {/* =================================================== */}
         {/* TOPBAR */}
-        <header className="sticky top-0 z-30 border-b border-slate-200/70 bg-[#f5f7fb]/90 backdrop-blur-xl">
+        {/* =================================================== */}
+
+        <header className="sticky top-0 z-30 border-b border-[#dce6f1] bg-[#f4f7fb]/90 backdrop-blur-xl">
           <div className="flex h-[82px] items-center justify-between px-5 sm:px-7 lg:px-9">
-            <div className="flex items-center gap-4">
+            <div className="flex min-w-0 items-center gap-4">
+              {/* MOBILE MENU */}
+
               <button
                 type="button"
                 aria-label="Buka sidebar"
-                className="flex size-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700 shadow-sm lg:hidden"
+                className="flex size-11 shrink-0 items-center justify-center rounded-2xl border border-[#dce6f1] bg-white text-[#0d2f53] shadow-sm lg:hidden"
                 onClick={() => setMobileSidebarOpen(true)}
               >
                 <Menu size={20} />
               </button>
 
-              <div>
-                <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-slate-400">
+              {/* TITLE */}
+
+              <div className="min-w-0">
+                <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-[#7c8ca0]">
                   RFID Management
                 </p>
 
-                <h1 className="mt-1 text-xl font-black tracking-[-0.035em] text-slate-950 sm:text-2xl">
+                <h1 className="mt-1 truncate text-xl font-black tracking-[-0.035em] text-[#101828] sm:text-2xl">
                   {currentMenu?.label ?? "Control Center"}
                 </h1>
               </div>
             </div>
 
-            <div className="hidden items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-xs font-bold text-emerald-700 sm:flex">
-              <span className="size-2 rounded-full bg-emerald-500" />
+            {/* API STATUS */}
+
+            <div className="hidden items-center gap-2 rounded-full border border-[#bcebd6] bg-[#e9f9f1] px-4 py-2 text-xs font-bold text-[#07875f] sm:flex">
+              <span className="size-2 rounded-full bg-[#10b981]" />
               API Ready
             </div>
           </div>
         </header>
 
+        {/* =================================================== */}
         {/* PAGE */}
+        {/* =================================================== */}
+
         <main className="px-5 py-7 sm:px-7 lg:px-9 lg:py-9">{children}</main>
       </div>
     </div>

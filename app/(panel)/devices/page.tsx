@@ -111,7 +111,7 @@ export default function DevicesPage() {
 
   return (
     <div className="mx-auto max-w-[1400px]">
-      <p className="max-w-2xl text-sm leading-6 text-slate-500">
+      <p className="max-w-2xl text-sm leading-6 text-[#52657a]">
         Pantau status, heartbeat, firmware, uptime, dan kualitas koneksi
         Registration Reader.
       </p>
@@ -125,22 +125,22 @@ export default function DevicesPage() {
           return (
             <article
               key={device.id}
-              className="overflow-hidden rounded-[30px] border border-slate-200 bg-white"
+              className="overflow-hidden rounded-[30px] border border-[#dce6f1] bg-white shadow-[0_12px_40px_rgba(30,64,100,0.04)]"
             >
               {/* HEADER */}
 
-              <div className="flex flex-col gap-5 border-b border-slate-100 p-6 sm:flex-row sm:items-center sm:justify-between sm:p-7">
+              <div className="flex flex-col gap-5 border-b border-[#edf2f7] p-6 sm:flex-row sm:items-center sm:justify-between sm:p-7">
                 <div className="flex items-center gap-4">
-                  <div className="flex size-14 items-center justify-center rounded-[20px] bg-slate-950 text-white">
+                  <div className="flex size-14 items-center justify-center rounded-[20px] bg-[#007BFF] text-white">
                     <Radio size={23} />
                   </div>
 
                   <div>
-                    <p className="font-black tracking-[-0.02em]">
+                    <p className="font-black tracking-[-0.02em] text-[#172033]">
                       {device.name || "Registration Reader"}
                     </p>
 
-                    <p className="mt-1 text-xs font-bold text-slate-400">
+                    <p className="mt-1 text-xs font-bold text-[#8291a4]">
                       ESP32 + RC522
                     </p>
                   </div>
@@ -150,14 +150,14 @@ export default function DevicesPage() {
                   className={[
                     "inline-flex w-fit items-center gap-2 rounded-full px-4 py-2 text-[11px] font-black",
                     online
-                      ? "bg-emerald-50 text-emerald-700"
-                      : "bg-rose-50 text-rose-600",
+                      ? "bg-[#e9f9f1] text-[#07875f]"
+                      : "bg-[#fff0f0] text-[#dc2626]",
                   ].join(" ")}
                 >
                   <span
                     className={[
                       "size-2 rounded-full",
-                      online ? "bg-emerald-500" : "bg-rose-500",
+                      online ? "bg-[#10b981]" : "bg-[#ef4444]",
                     ].join(" ")}
                   />
 
@@ -170,26 +170,26 @@ export default function DevicesPage() {
               <div className="grid gap-3 p-6 sm:grid-cols-2 sm:p-7">
                 {/* FIRMWARE */}
 
-                <div className="rounded-[22px] bg-slate-50 p-4">
-                  <div className="flex items-center gap-2 text-xs font-semibold text-slate-400">
-                    <Cpu size={14} />
+                <div className="rounded-[22px] border border-[#edf2f7] bg-[#f7fafd] p-4">
+                  <div className="flex items-center gap-2 text-xs font-semibold text-[#8291a4]">
+                    <Cpu size={14} className="text-[#007BFF]" />
                     Firmware
                   </div>
 
-                  <p className="mt-3 text-lg font-black">
+                  <p className="mt-3 text-lg font-black text-[#172033]">
                     {device.firmwareVersion || "-"}
                   </p>
                 </div>
 
                 {/* READER TYPE */}
 
-                <div className="rounded-[22px] bg-slate-50 p-4">
-                  <div className="flex items-center gap-2 text-xs font-semibold text-slate-400">
-                    <Router size={14} />
+                <div className="rounded-[22px] border border-[#edf2f7] bg-[#f7fafd] p-4">
+                  <div className="flex items-center gap-2 text-xs font-semibold text-[#8291a4]">
+                    <Router size={14} className="text-[#007BFF]" />
                     Reader Type
                   </div>
 
-                  <p className="mt-3 text-lg font-black capitalize">
+                  <p className="mt-3 text-lg font-black capitalize text-[#172033]">
                     {device.type === "registration"
                       ? "Registration"
                       : device.type || "-"}
@@ -198,30 +198,30 @@ export default function DevicesPage() {
 
                 {/* WIFI */}
 
-                <div className="rounded-[22px] bg-slate-50 p-4 sm:col-span-2">
+                <div className="rounded-[22px] border border-[#edf2f7] bg-[#f7fafd] p-4 sm:col-span-2">
                   <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 text-xs font-semibold text-slate-400">
-                      <Wifi size={14} />
+                    <div className="flex items-center gap-2 text-xs font-semibold text-[#8291a4]">
+                      <Wifi size={14} className="text-[#007BFF]" />
                       Wi-Fi Signal
                     </div>
 
-                    <span className="text-xs font-black text-slate-600">
+                    <span className="text-xs font-black text-[#52657a]">
                       {wifi.label}
                     </span>
                   </div>
 
-                  <div className="mt-4 h-2 overflow-hidden rounded-full bg-slate-200">
+                  <div className="mt-4 h-2 overflow-hidden rounded-full bg-[#dce6f1]">
                     <div
-                      className="h-full rounded-full bg-slate-950 transition-all duration-500"
+                      className="h-full rounded-full bg-[#007BFF] transition-all duration-500"
                       style={{
                         width: `${wifi.percentage}%`,
                       }}
                     />
                   </div>
 
-                  <p className="mt-3 text-sm font-black">
+                  <p className="mt-3 text-sm font-black text-[#172033]">
                     {device.wifiRssi ?? "-"}{" "}
-                    <span className="text-xs font-medium text-slate-400">
+                    <span className="text-xs font-medium text-[#8291a4]">
                       dBm
                     </span>
                   </p>
@@ -229,13 +229,13 @@ export default function DevicesPage() {
 
                 {/* UPTIME */}
 
-                <div className="rounded-[22px] bg-slate-50 p-4">
-                  <div className="flex items-center gap-2 text-xs font-semibold text-slate-400">
-                    <Activity size={14} />
+                <div className="rounded-[22px] border border-[#edf2f7] bg-[#f7fafd] p-4">
+                  <div className="flex items-center gap-2 text-xs font-semibold text-[#8291a4]">
+                    <Activity size={14} className="text-[#007BFF]" />
                     Uptime
                   </div>
 
-                  <p className="mt-3 text-lg font-black">
+                  <p className="mt-3 text-lg font-black text-[#172033]">
                     {typeof device.uptimeSeconds === "number"
                       ? `${Math.floor(device.uptimeSeconds / 60)} menit`
                       : "-"}
@@ -244,16 +244,16 @@ export default function DevicesPage() {
 
                 {/* CONNECTION */}
 
-                <div className="rounded-[22px] bg-slate-50 p-4">
-                  <div className="flex items-center gap-2 text-xs font-semibold text-slate-400">
-                    <Radio size={14} />
+                <div className="rounded-[22px] border border-[#edf2f7] bg-[#f7fafd] p-4">
+                  <div className="flex items-center gap-2 text-xs font-semibold text-[#8291a4]">
+                    <Radio size={14} className="text-[#007BFF]" />
                     Connection
                   </div>
 
                   <p
                     className={[
                       "mt-3 text-lg font-black",
-                      online ? "text-emerald-600" : "text-rose-500",
+                      online ? "text-[#07875f]" : "text-[#ef4444]",
                     ].join(" ")}
                   >
                     {online ? "Connected" : "Disconnected"}
@@ -262,13 +262,13 @@ export default function DevicesPage() {
 
                 {/* HEARTBEAT */}
 
-                <div className="rounded-[22px] bg-slate-50 p-4 sm:col-span-2">
-                  <div className="flex items-center gap-2 text-xs font-semibold text-slate-400">
-                    <Activity size={14} />
+                <div className="rounded-[22px] border border-[#edf2f7] bg-[#f7fafd] p-4 sm:col-span-2">
+                  <div className="flex items-center gap-2 text-xs font-semibold text-[#8291a4]">
+                    <Activity size={14} className="text-[#007BFF]" />
                     Last heartbeat
                   </div>
 
-                  <p className="mt-3 text-sm font-black">
+                  <p className="mt-3 text-sm font-black text-[#172033]">
                     {device.lastSeenAt
                       ? new Intl.DateTimeFormat("id-ID", {
                           dateStyle: "medium",
@@ -287,12 +287,16 @@ export default function DevicesPage() {
       {/* EMPTY */}
 
       {!loading && devices.length === 0 && (
-        <div className="mt-7 flex min-h-80 flex-col items-center justify-center rounded-[30px] border border-dashed border-slate-300 bg-white p-8 text-center">
-          <Cpu size={34} className="text-slate-300" />
+        <div className="mt-7 flex min-h-80 flex-col items-center justify-center rounded-[30px] border border-dashed border-[#b9cadd] bg-white p-8 text-center shadow-[0_12px_40px_rgba(30,64,100,0.03)]">
+          <div className="flex size-14 items-center justify-center rounded-2xl bg-[#eaf4ff]">
+            <Cpu size={34} className="text-[#007BFF]" />
+          </div>
 
-          <p className="mt-4 font-black">Reader belum terhubung</p>
+          <p className="mt-4 font-black text-[#172033]">
+            Reader belum terhubung
+          </p>
 
-          <p className="mt-1 max-w-sm text-sm leading-6 text-slate-400">
+          <p className="mt-1 max-w-sm text-sm leading-6 text-[#8291a4]">
             Nyalakan ESP32. Data reader akan dibuat otomatis setelah heartbeat
             pertama diterima.
           </p>

@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import {
   collection,
   doc,
+  getDoc,
   runTransaction,
   serverTimestamp,
 } from "firebase/firestore";
@@ -19,7 +20,43 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+// ============================================================
+// READER
+// ============================================================
+
 const READER_DOCUMENT = "registration-reader";
+
+// ============================================================
+// SETTINGS
+// ============================================================
+
+const ATTENDANCE_SETTINGS_DOCUMENT = "attendance-settings";
+
+// ============================================================
+// DEFAULT ATTENDANCE SETTINGS
+// ============================================================
+
+const DEFAULT_ATTENDANCE_SETTINGS = {
+  checkInOpen: "06:00",
+
+  workStart: "09:00",
+
+  lateStart: "09:16",
+
+  checkInClose: "12:00",
+
+  checkOutOpen: "15:00",
+
+  normalCheckOut: "17:00",
+
+  minimumWorkDurationMinutes: 300,
+
+  timezone: "Asia/Jakarta",
+};
+
+// ============================================================
+// REQUEST
+// ============================================================
 
 interface RegisterScanBody {
   uid?: unknown;
@@ -32,6 +69,56 @@ interface RegisterScanBody {
 
   uptimeSeconds?: unknown;
 }
+
+// ============================================================
+// ATTENDANCE SETTINGS
+// ============================================================
+
+interface AttendanceRules {
+  checkInOpen: string;
+
+  workStart: string;
+
+  lateStart: string;
+
+  checkInClose: string;
+
+  checkOutOpen: string;
+
+  normalCheckOut: string;
+
+  checkInOpenMinutes: number;
+
+  workStartMinutes: number;
+
+  lateStartMinutes: number;
+
+  checkInCloseMinutes: number;
+
+  checkOutOpenMinutes: number;
+
+  normalCheckOutMinutes: number;
+
+  minimumWorkDurationMinutes: number;
+
+  minimumWorkDurationMs: number;
+
+  timezone: string;
+}
+
+// ============================================================
+// ATTENDANCE TYPES
+// ============================================================
+
+type CheckInStatus = "early" | "on_time" | "late";
+
+type CheckOutStatus = "early" | "normal";
+
+type CheckOutBlockedReason = "before_checkout_window" | "minimum_duration";
+
+// ============================================================
+// SCAN RESULT
+// ============================================================
 
 type ScanResult =
   | {
@@ -57,7 +144,22 @@ type ScanResult =
       type: "card_not_registered";
     }
   | {
+      type: "card_inactive";
+
+      employeeName: string | null;
+    }
+  | {
       type: "employee_inactive";
+
+      employeeName: string;
+    }
+  | {
+      type: "check_in_too_early";
+
+      employeeName: string;
+    }
+  | {
+      type: "check_in_closed";
 
       employeeName: string;
     }
@@ -65,11 +167,28 @@ type ScanResult =
       type: "attendance_check_in";
 
       employeeName: string;
+
+      checkInStatus: CheckInStatus;
+
+      lateMinutes: number;
+    }
+  | {
+      type: "check_out_too_early";
+
+      employeeName: string;
+
+      reason: CheckOutBlockedReason;
+
+      remainingMinutes: number;
     }
   | {
       type: "attendance_check_out";
 
       employeeName: string;
+
+      checkOutStatus: CheckOutStatus;
+
+      workDurationMinutes: number;
     }
   | {
       type: "attendance_complete";
@@ -77,7 +196,172 @@ type ScanResult =
       employeeName: string;
     };
 
-function getJakartaDateKey() {
+// ============================================================
+// SETTINGS HELPERS
+// ============================================================
+
+function isValidTime(value: unknown): value is string {
+  return typeof value === "string" && /^([01]\d|2[0-3]):([0-5]\d)$/.test(value);
+}
+
+// ============================================================
+
+function timeToMinutes(value: string) {
+  const [hours, minutes] = value.split(":").map(Number);
+
+  return hours * 60 + minutes;
+}
+
+// ============================================================
+
+function createAttendanceRules(
+  data?: Record<string, unknown>,
+): AttendanceRules {
+  const checkInOpen = isValidTime(data?.checkInOpen)
+    ? data.checkInOpen
+    : DEFAULT_ATTENDANCE_SETTINGS.checkInOpen;
+
+  const workStart = isValidTime(data?.workStart)
+    ? data.workStart
+    : DEFAULT_ATTENDANCE_SETTINGS.workStart;
+
+  const lateStart = isValidTime(data?.lateStart)
+    ? data.lateStart
+    : DEFAULT_ATTENDANCE_SETTINGS.lateStart;
+
+  const checkInClose = isValidTime(data?.checkInClose)
+    ? data.checkInClose
+    : DEFAULT_ATTENDANCE_SETTINGS.checkInClose;
+
+  const checkOutOpen = isValidTime(data?.checkOutOpen)
+    ? data.checkOutOpen
+    : DEFAULT_ATTENDANCE_SETTINGS.checkOutOpen;
+
+  const normalCheckOut = isValidTime(data?.normalCheckOut)
+    ? data.normalCheckOut
+    : DEFAULT_ATTENDANCE_SETTINGS.normalCheckOut;
+
+  let minimumWorkDurationMinutes =
+    typeof data?.minimumWorkDurationMinutes === "number" &&
+    Number.isFinite(data.minimumWorkDurationMinutes)
+      ? Math.floor(data.minimumWorkDurationMinutes)
+      : DEFAULT_ATTENDANCE_SETTINGS.minimumWorkDurationMinutes;
+
+  if (minimumWorkDurationMinutes < 60 || minimumWorkDurationMinutes > 720) {
+    minimumWorkDurationMinutes =
+      DEFAULT_ATTENDANCE_SETTINGS.minimumWorkDurationMinutes;
+  }
+
+  const checkInOpenMinutes = timeToMinutes(checkInOpen);
+
+  const workStartMinutes = timeToMinutes(workStart);
+
+  const lateStartMinutes = timeToMinutes(lateStart);
+
+  const checkInCloseMinutes = timeToMinutes(checkInClose);
+
+  const checkOutOpenMinutes = timeToMinutes(checkOutOpen);
+
+  const normalCheckOutMinutes = timeToMinutes(normalCheckOut);
+
+  /*
+   * Safety validation.
+   *
+   * Walaupun API settings sudah melakukan validasi,
+   * backend scan tetap memverifikasi supaya data Firestore
+   * yang berubah manual tidak merusak business rule.
+   */
+
+  const validCheckInFlow =
+    checkInOpenMinutes <= workStartMinutes &&
+    workStartMinutes <= lateStartMinutes &&
+    lateStartMinutes <= checkInCloseMinutes;
+
+  const validCheckOutFlow = checkOutOpenMinutes <= normalCheckOutMinutes;
+
+  if (!validCheckInFlow || !validCheckOutFlow) {
+    return createAttendanceRules();
+  }
+
+  return {
+    checkInOpen,
+
+    workStart,
+
+    lateStart,
+
+    checkInClose,
+
+    checkOutOpen,
+
+    normalCheckOut,
+
+    checkInOpenMinutes,
+
+    workStartMinutes,
+
+    lateStartMinutes,
+
+    checkInCloseMinutes,
+
+    checkOutOpenMinutes,
+
+    normalCheckOutMinutes,
+
+    minimumWorkDurationMinutes,
+
+    minimumWorkDurationMs: minimumWorkDurationMinutes * 60 * 1000,
+
+    timezone: "Asia/Jakarta",
+  };
+}
+
+// ============================================================
+// LOAD SETTINGS
+// ============================================================
+
+async function loadAttendanceRules() {
+  try {
+    const settingsRef = doc(db, "system", ATTENDANCE_SETTINGS_DOCUMENT);
+
+    const snapshot = await getDoc(settingsRef);
+
+    if (!snapshot.exists()) {
+      return createAttendanceRules();
+    }
+
+    return createAttendanceRules(snapshot.data());
+  } catch (error) {
+    /*
+     * Scan tidak boleh mati hanya karena setting
+     * tidak bisa dibaca.
+     *
+     * Gunakan default sebagai fallback.
+     */
+
+    console.error("[ATTENDANCE SETTINGS FALLBACK]", error);
+
+    return createAttendanceRules();
+  }
+}
+
+// ============================================================
+// JAKARTA TIME
+// ============================================================
+
+interface JakartaDateTime {
+  year: string;
+
+  month: string;
+
+  day: string;
+
+  hour: number;
+
+  minute: number;
+}
+
+function getJakartaDateTime(date: Date = new Date()): JakartaDateTime {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "Asia/Jakarta",
 
@@ -86,16 +370,177 @@ function getJakartaDateKey() {
     month: "2-digit",
 
     day: "2-digit",
-  }).formatToParts(new Date());
 
-  const year = parts.find((part) => part.type === "year")?.value;
+    hour: "2-digit",
 
-  const month = parts.find((part) => part.type === "month")?.value;
+    minute: "2-digit",
 
-  const day = parts.find((part) => part.type === "day")?.value;
+    hourCycle: "h23",
+  }).formatToParts(date);
 
-  return `${year}-${month}-${day}`;
+  const year = parts.find((part) => part.type === "year")?.value ?? "";
+
+  const month = parts.find((part) => part.type === "month")?.value ?? "";
+
+  const day = parts.find((part) => part.type === "day")?.value ?? "";
+
+  const hour = Number(parts.find((part) => part.type === "hour")?.value ?? "0");
+
+  const minute = Number(
+    parts.find((part) => part.type === "minute")?.value ?? "0",
+  );
+
+  return {
+    year,
+
+    month,
+
+    day,
+
+    hour,
+
+    minute,
+  };
 }
+
+// ============================================================
+// DATE KEY
+// ============================================================
+
+function getJakartaDateKey(date: Date = new Date()) {
+  const jakarta = getJakartaDateTime(date);
+
+  return `${jakarta.year}-${jakarta.month}-${jakarta.day}`;
+}
+
+// ============================================================
+// MINUTES FROM MIDNIGHT
+// ============================================================
+
+function getMinutesOfDay(date: Date = new Date()) {
+  const jakarta = getJakartaDateTime(date);
+
+  return jakarta.hour * 60 + jakarta.minute;
+}
+
+// ============================================================
+// CHECK-IN CLASSIFICATION
+// ============================================================
+
+function getCheckInStatus(
+  minutesOfDay: number,
+  rules: AttendanceRules,
+): CheckInStatus {
+  if (minutesOfDay < rules.workStartMinutes) {
+    return "early";
+  }
+
+  if (minutesOfDay < rules.lateStartMinutes) {
+    return "on_time";
+  }
+
+  return "late";
+}
+
+// ============================================================
+// LATE MINUTES
+// ============================================================
+
+function calculateLateMinutes(minutesOfDay: number, rules: AttendanceRules) {
+  if (minutesOfDay < rules.lateStartMinutes) {
+    return 0;
+  }
+
+  return Math.max(0, minutesOfDay - rules.workStartMinutes);
+}
+
+// ============================================================
+// DURATION FORMAT
+// ============================================================
+
+function formatDuration(totalMinutes: number) {
+  const safeMinutes = Math.max(0, Math.floor(totalMinutes));
+
+  const hours = Math.floor(safeMinutes / 60);
+
+  const minutes = safeMinutes % 60;
+
+  if (hours === 0) {
+    return `${minutes}m`;
+  }
+
+  if (minutes === 0) {
+    return `${hours}j`;
+  }
+
+  return `${hours}j ${minutes}m`;
+}
+
+// ============================================================
+// HUMAN DURATION
+// ============================================================
+
+function formatDurationLong(totalMinutes: number) {
+  const safeMinutes = Math.max(0, Math.floor(totalMinutes));
+
+  const hours = Math.floor(safeMinutes / 60);
+
+  const minutes = safeMinutes % 60;
+
+  if (hours === 0) {
+    return `${minutes} menit`;
+  }
+
+  if (minutes === 0) {
+    return `${hours} jam`;
+  }
+
+  return `${hours} jam ${minutes} menit`;
+}
+
+// ============================================================
+// FIRESTORE TIMESTAMP -> MILLISECONDS
+// ============================================================
+
+function getTimestampMillis(value: unknown): number | null {
+  if (!value) {
+    return null;
+  }
+
+  // Firestore Timestamp
+
+  if (typeof value === "object" && value !== null && "toMillis" in value) {
+    const toMillis = (
+      value as {
+        toMillis?: unknown;
+      }
+    ).toMillis;
+
+    if (typeof toMillis === "function") {
+      try {
+        const millis = (toMillis as () => number).call(value);
+
+        return Number.isFinite(millis) ? millis : null;
+      } catch {
+        return null;
+      }
+    }
+  }
+
+  // Legacy ISO string fallback
+
+  if (typeof value === "string") {
+    const millis = new Date(value).getTime();
+
+    return Number.isFinite(millis) ? millis : null;
+  }
+
+  return null;
+}
+
+// ============================================================
+// POST
+// ============================================================
 
 export async function POST(request: Request) {
   try {
@@ -123,6 +568,29 @@ export async function POST(request: Request) {
     }
 
     // ========================================================
+    // LOAD ATTENDANCE RULES
+    // ========================================================
+
+    /*
+     * Setiap request scan membaca setting terbaru.
+     *
+     * Artinya perubahan dari halaman /settings
+     * langsung berlaku pada scan berikutnya.
+     */
+
+    const attendanceRules = await loadAttendanceRules();
+
+    // ========================================================
+    // CURRENT SCAN TIME
+    // ========================================================
+
+    const scanDate = new Date();
+
+    const scanTimeMinutes = getMinutesOfDay(scanDate);
+
+    const dateKey = getJakartaDateKey(scanDate);
+
+    // ========================================================
     // READER INFORMATION
     // ========================================================
 
@@ -137,8 +605,6 @@ export async function POST(request: Request) {
       Number.isFinite(body.uptimeSeconds)
         ? Math.max(0, Math.floor(body.uptimeSeconds))
         : null;
-
-    const dateKey = getJakartaDateKey();
 
     // ========================================================
     // BASE REFERENCES
@@ -199,9 +665,9 @@ export async function POST(request: Request) {
 
         const sessionSnapshot = await transaction.get(sessionRef);
 
-        // =================================================
-        // INVALID REGISTRATION SESSION
-        // =================================================
+        // ===============================================
+        // INVALID SESSION
+        // ===============================================
 
         if (
           !sessionSnapshot.exists() ||
@@ -256,17 +722,16 @@ export async function POST(request: Request) {
         const employeeRef = doc(db, "employees", employeeId);
 
         /*
-         * Semua READ transaction dilakukan
-         * sebelum WRITE.
+         * Semua READ sebelum WRITE.
          */
 
         const employeeSnapshot = await transaction.get(employeeRef);
 
         const cardSnapshot = await transaction.get(cardRef);
 
-        // =================================================
+        // ===============================================
         // EMPLOYEE NOT FOUND
-        // =================================================
+        // ===============================================
 
         if (!employeeSnapshot.exists()) {
           transaction.update(sessionRef, {
@@ -320,9 +785,9 @@ export async function POST(request: Request) {
 
         const employee = employeeSnapshot.data();
 
-        // =================================================
+        // ===============================================
         // CARD ALREADY REGISTERED
-        // =================================================
+        // ===============================================
 
         if (cardSnapshot.exists()) {
           const existingCard = cardSnapshot.data();
@@ -365,9 +830,9 @@ export async function POST(request: Request) {
           };
         }
 
-        // =================================================
+        // ===============================================
         // EMPLOYEE ALREADY HAS CARD
-        // =================================================
+        // ===============================================
 
         if (typeof employee.rfidUid === "string" && employee.rfidUid) {
           transaction.set(readerRef, readerStatus, {
@@ -399,9 +864,9 @@ export async function POST(request: Request) {
           };
         }
 
-        // =================================================
+        // ===============================================
         // CREATE RFID CARD
-        // =================================================
+        // ===============================================
 
         transaction.set(cardRef, {
           uid,
@@ -419,9 +884,9 @@ export async function POST(request: Request) {
           updatedAt: serverTimestamp(),
         });
 
-        // =================================================
+        // ===============================================
         // UPDATE EMPLOYEE
-        // =================================================
+        // ===============================================
 
         transaction.update(employeeRef, {
           rfidUid: uid,
@@ -429,9 +894,9 @@ export async function POST(request: Request) {
           updatedAt: serverTimestamp(),
         });
 
-        // =================================================
+        // ===============================================
         // COMPLETE SESSION
-        // =================================================
+        // ===============================================
 
         transaction.update(sessionRef, {
           status: "completed",
@@ -489,12 +954,8 @@ export async function POST(request: Request) {
       }
 
       // ==================================================
-      //
       // MODE 2:
       // ATTENDANCE
-      //
-      // Tidak ada registration session.
-      //
       // ==================================================
 
       const cardSnapshot = await transaction.get(cardRef);
@@ -542,6 +1003,47 @@ export async function POST(request: Request) {
       const employeeId =
         typeof card.employeeId === "string" ? card.employeeId : "";
 
+      const cardEmployeeName =
+        typeof card.employeeName === "string" ? card.employeeName : null;
+
+      // ==================================================
+      // CARD INACTIVE
+      // ==================================================
+
+      if (card.status === "inactive") {
+        transaction.set(readerRef, readerStatus, {
+          merge: true,
+        });
+
+        transaction.set(logRef, {
+          uid,
+
+          readerType,
+
+          action: "attendance",
+
+          result: "warning",
+
+          code: "CARD_INACTIVE",
+
+          employeeId: employeeId || null,
+
+          employeeName: cardEmployeeName,
+
+          message: cardEmployeeName
+            ? `Kartu RFID milik ${cardEmployeeName} sedang nonaktif.`
+            : "Kartu RFID sedang nonaktif.",
+
+          createdAt: serverTimestamp(),
+        });
+
+        return {
+          type: "card_inactive",
+
+          employeeName: cardEmployeeName,
+        };
+      }
+
       const employeeRef = doc(db, "employees", employeeId);
 
       const attendanceId = `${dateKey}_${employeeId}`;
@@ -549,7 +1051,7 @@ export async function POST(request: Request) {
       const attendanceRef = doc(db, "attendanceRecords", attendanceId);
 
       /*
-       * Semua reads dahulu.
+       * Semua READ dilakukan sebelum WRITE.
        */
 
       const employeeSnapshot = await transaction.get(employeeRef);
@@ -633,11 +1135,123 @@ export async function POST(request: Request) {
 
       // ==================================================
       // FIRST SCAN TODAY
-      //
-      // CHECK IN
       // ==================================================
 
       if (!attendanceSnapshot.exists()) {
+        // ================================================
+        // CHECK-IN NOT OPEN
+        // ================================================
+
+        if (scanTimeMinutes < attendanceRules.checkInOpenMinutes) {
+          const message = `Check-in belum dibuka. Check-in dimulai pukul ${attendanceRules.checkInOpen} WIB.`;
+
+          transaction.set(readerRef, readerStatus, {
+            merge: true,
+          });
+
+          transaction.set(logRef, {
+            uid,
+
+            readerType,
+
+            action: "check_in",
+
+            result: "warning",
+
+            code: "CHECK_IN_TOO_EARLY",
+
+            employeeId: employeeSnapshot.id,
+
+            employeeName,
+
+            message,
+
+            createdAt: serverTimestamp(),
+          });
+
+          return {
+            type: "check_in_too_early",
+
+            employeeName,
+          };
+        }
+
+        // ================================================
+        // CHECK-IN CLOSED
+        //
+        // Jika setting 12:00:
+        // 12:00:00 - 12:00:59 masih diterima
+        // 12:01+ ditolak.
+        // ================================================
+
+        if (scanTimeMinutes > attendanceRules.checkInCloseMinutes) {
+          const message = `Waktu check-in telah berakhir. Check-in hanya sampai pukul ${attendanceRules.checkInClose} WIB.`;
+
+          transaction.set(readerRef, readerStatus, {
+            merge: true,
+          });
+
+          transaction.set(logRef, {
+            uid,
+
+            readerType,
+
+            action: "check_in",
+
+            result: "warning",
+
+            code: "CHECK_IN_TIME_CLOSED",
+
+            employeeId: employeeSnapshot.id,
+
+            employeeName,
+
+            message,
+
+            createdAt: serverTimestamp(),
+          });
+
+          return {
+            type: "check_in_closed",
+
+            employeeName,
+          };
+        }
+
+        // ================================================
+        // CHECK-IN STATUS
+        // ================================================
+
+        const checkInStatus = getCheckInStatus(
+          scanTimeMinutes,
+          attendanceRules,
+        );
+
+        const lateMinutes = calculateLateMinutes(
+          scanTimeMinutes,
+          attendanceRules,
+        );
+
+        let checkInMessage = `${employeeName} berhasil absen masuk.`;
+
+        if (checkInStatus === "early") {
+          checkInMessage = `${employeeName} berhasil absen masuk lebih awal.`;
+        }
+
+        if (checkInStatus === "on_time") {
+          checkInMessage = `${employeeName} berhasil absen masuk tepat waktu.`;
+        }
+
+        if (checkInStatus === "late") {
+          checkInMessage = `${employeeName} berhasil absen masuk. Terlambat ${formatDuration(
+            lateMinutes,
+          )}.`;
+        }
+
+        // ================================================
+        // CREATE ATTENDANCE
+        // ================================================
+
         transaction.set(attendanceRef, {
           dateKey,
 
@@ -657,7 +1271,15 @@ export async function POST(request: Request) {
 
           checkInAt: serverTimestamp(),
 
+          checkInStatus,
+
+          lateMinutes,
+
           checkOutAt: null,
+
+          checkOutStatus: null,
+
+          workDurationMinutes: null,
 
           createdAt: serverTimestamp(),
 
@@ -683,7 +1305,11 @@ export async function POST(request: Request) {
 
           employeeName,
 
-          message: `${employeeName} berhasil absen masuk.`,
+          checkInStatus,
+
+          lateMinutes,
+
+          message: checkInMessage,
 
           createdAt: serverTimestamp(),
         });
@@ -692,29 +1318,120 @@ export async function POST(request: Request) {
           type: "attendance_check_in",
 
           employeeName,
+
+          checkInStatus,
+
+          lateMinutes,
         };
       }
 
       // ==================================================
-      // ATTENDANCE ALREADY EXISTS
+      // ATTENDANCE EXISTS
       // ==================================================
 
       const attendance = attendanceSnapshot.data();
 
       // ==================================================
-      // SECOND SCAN
-      //
-      // CHECK OUT
+      // ALREADY COMPLETE
       // ==================================================
 
-      if (!attendance.checkOutAt) {
-        transaction.update(attendanceRef, {
-          status: "completed",
-
-          checkOutAt: serverTimestamp(),
-
-          updatedAt: serverTimestamp(),
+      if (attendance.checkOutAt) {
+        transaction.set(readerRef, readerStatus, {
+          merge: true,
         });
+
+        transaction.set(logRef, {
+          uid,
+
+          readerType,
+
+          action: "attendance",
+
+          result: "warning",
+
+          code: "ATTENDANCE_ALREADY_COMPLETE",
+
+          employeeId: employeeSnapshot.id,
+
+          employeeName,
+
+          message: `Absensi ${employeeName} hari ini sudah lengkap.`,
+
+          createdAt: serverTimestamp(),
+        });
+
+        return {
+          type: "attendance_complete",
+
+          employeeName,
+        };
+      }
+
+      // ==================================================
+      // CHECK-IN TIMESTAMP
+      // ==================================================
+
+      const checkInMillis = getTimestampMillis(attendance.checkInAt);
+
+      if (checkInMillis === null) {
+        transaction.set(readerRef, readerStatus, {
+          merge: true,
+        });
+
+        transaction.set(logRef, {
+          uid,
+
+          readerType,
+
+          action: "check_out",
+
+          result: "warning",
+
+          code: "CHECK_OUT_TOO_EARLY",
+
+          employeeId: employeeSnapshot.id,
+
+          employeeName,
+
+          message:
+            "Anda sudah melakukan absen masuk. Waktu check-in belum dapat divalidasi untuk check-out.",
+
+          createdAt: serverTimestamp(),
+        });
+
+        return {
+          type: "check_out_too_early",
+
+          employeeName,
+
+          reason: "minimum_duration",
+
+          remainingMinutes: attendanceRules.minimumWorkDurationMinutes,
+        };
+      }
+
+      // ==================================================
+      // WORK DURATION
+      // ==================================================
+
+      const currentMillis = scanDate.getTime();
+
+      const elapsedMillis = Math.max(0, currentMillis - checkInMillis);
+
+      const workDurationMinutes = Math.floor(elapsedMillis / 60_000);
+
+      const minimumCheckoutMillis =
+        checkInMillis + attendanceRules.minimumWorkDurationMs;
+
+      // ==================================================
+      // RULE 1:
+      // CHECKOUT WINDOW
+      // ==================================================
+
+      if (scanTimeMinutes < attendanceRules.checkOutOpenMinutes) {
+        const message = `Anda sudah melakukan absen masuk. Check-out baru dapat dilakukan mulai pukul ${attendanceRules.checkOutOpen} WIB dan minimal ${formatDurationLong(
+          attendanceRules.minimumWorkDurationMinutes,
+        )} setelah check-in.`;
 
         transaction.set(readerRef, readerStatus, {
           merge: true,
@@ -727,58 +1444,150 @@ export async function POST(request: Request) {
 
           action: "check_out",
 
-          result: "success",
+          result: "warning",
 
-          code: "ATTENDANCE_CHECK_OUT",
+          code: "CHECK_OUT_TOO_EARLY",
 
           employeeId: employeeSnapshot.id,
 
           employeeName,
 
-          message: `${employeeName} berhasil absen pulang.`,
+          message,
 
           createdAt: serverTimestamp(),
         });
 
         return {
-          type: "attendance_check_out",
+          type: "check_out_too_early",
 
           employeeName,
+
+          reason: "before_checkout_window",
+
+          remainingMinutes: 0,
         };
       }
 
       // ==================================================
-      // ATTENDANCE ALREADY COMPLETE
+      // RULE 2:
+      // MINIMUM WORK DURATION
       // ==================================================
+
+      if (currentMillis < minimumCheckoutMillis) {
+        const remainingMinutes = Math.max(
+          1,
+          Math.ceil((minimumCheckoutMillis - currentMillis) / 60_000),
+        );
+
+        const message = `Durasi kerja belum mencapai ${formatDurationLong(
+          attendanceRules.minimumWorkDurationMinutes,
+        )}. Check-out dapat dilakukan dalam ${formatDuration(
+          remainingMinutes,
+        )} lagi.`;
+
+        transaction.set(readerRef, readerStatus, {
+          merge: true,
+        });
+
+        transaction.set(logRef, {
+          uid,
+
+          readerType,
+
+          action: "check_out",
+
+          result: "warning",
+
+          code: "CHECK_OUT_TOO_EARLY",
+
+          employeeId: employeeSnapshot.id,
+
+          employeeName,
+
+          remainingMinutes,
+
+          message,
+
+          createdAt: serverTimestamp(),
+        });
+
+        return {
+          type: "check_out_too_early",
+
+          employeeName,
+
+          reason: "minimum_duration",
+
+          remainingMinutes,
+        };
+      }
+
+      // ==================================================
+      // CHECKOUT STATUS
+      // ==================================================
+
+      const checkOutStatus: CheckOutStatus =
+        scanTimeMinutes < attendanceRules.normalCheckOutMinutes
+          ? "early"
+          : "normal";
+
+      // ==================================================
+      // COMPLETE ATTENDANCE
+      // ==================================================
+
+      transaction.update(attendanceRef, {
+        status: "completed",
+
+        checkOutAt: serverTimestamp(),
+
+        checkOutStatus,
+
+        workDurationMinutes,
+
+        updatedAt: serverTimestamp(),
+      });
 
       transaction.set(readerRef, readerStatus, {
         merge: true,
       });
+
+      const checkOutMessage =
+        checkOutStatus === "early"
+          ? `${employeeName} berhasil absen pulang lebih awal.`
+          : `${employeeName} berhasil absen pulang.`;
 
       transaction.set(logRef, {
         uid,
 
         readerType,
 
-        action: "attendance",
+        action: "check_out",
 
-        result: "warning",
+        result: "success",
 
-        code: "ATTENDANCE_ALREADY_COMPLETE",
+        code: "ATTENDANCE_CHECK_OUT",
 
         employeeId: employeeSnapshot.id,
 
         employeeName,
 
-        message: `Absensi ${employeeName} hari ini sudah lengkap.`,
+        checkOutStatus,
+
+        workDurationMinutes,
+
+        message: checkOutMessage,
 
         createdAt: serverTimestamp(),
       });
 
       return {
-        type: "attendance_complete",
+        type: "attendance_check_out",
 
         employeeName,
+
+        checkOutStatus,
+
+        workDurationMinutes,
       };
     });
 
@@ -788,7 +1597,7 @@ export async function POST(request: Request) {
 
     switch (result.type) {
       // ======================================================
-      // REGISTRATION
+      // REGISTRATION SUCCESS
       // ======================================================
 
       case "registration_success":
@@ -801,6 +1610,10 @@ export async function POST(request: Request) {
 
           message: `RFID berhasil didaftarkan untuk ${result.employeeName}.`,
         });
+
+      // ======================================================
+      // CARD ALREADY REGISTERED
+      // ======================================================
 
       case "card_already_registered":
         return NextResponse.json(
@@ -820,6 +1633,10 @@ export async function POST(request: Request) {
           },
         );
 
+      // ======================================================
+      // EMPLOYEE ALREADY HAS CARD
+      // ======================================================
+
       case "employee_already_has_card":
         return NextResponse.json(
           {
@@ -836,6 +1653,10 @@ export async function POST(request: Request) {
           },
         );
 
+      // ======================================================
+      // INVALID SESSION
+      // ======================================================
+
       case "invalid_session":
         return NextResponse.json(
           {
@@ -851,10 +1672,70 @@ export async function POST(request: Request) {
         );
 
       // ======================================================
-      // ATTENDANCE CHECK IN
+      // CHECK-IN TOO EARLY
       // ======================================================
 
-      case "attendance_check_in":
+      case "check_in_too_early":
+        return NextResponse.json(
+          {
+            success: false,
+
+            code: "CHECK_IN_TOO_EARLY",
+
+            mode: "attendance",
+
+            employeeName: result.employeeName,
+
+            message: `Check-in belum dibuka. Check-in dimulai pukul ${attendanceRules.checkInOpen} WIB.`,
+          },
+          {
+            status: 409,
+          },
+        );
+
+      // ======================================================
+      // CHECK-IN CLOSED
+      // ======================================================
+
+      case "check_in_closed":
+        return NextResponse.json(
+          {
+            success: false,
+
+            code: "CHECK_IN_TIME_CLOSED",
+
+            mode: "attendance",
+
+            employeeName: result.employeeName,
+
+            message: `Waktu check-in telah berakhir. Check-in hanya sampai pukul ${attendanceRules.checkInClose} WIB.`,
+          },
+          {
+            status: 409,
+          },
+        );
+
+      // ======================================================
+      // CHECK-IN SUCCESS
+      // ======================================================
+
+      case "attendance_check_in": {
+        let message = `${result.employeeName} berhasil absen masuk.`;
+
+        if (result.checkInStatus === "early") {
+          message = `${result.employeeName} berhasil absen masuk lebih awal.`;
+        }
+
+        if (result.checkInStatus === "on_time") {
+          message = `${result.employeeName} berhasil absen masuk tepat waktu.`;
+        }
+
+        if (result.checkInStatus === "late") {
+          message = `${result.employeeName} berhasil absen masuk. Terlambat ${formatDuration(
+            result.lateMinutes,
+          )}.`;
+        }
+
         return NextResponse.json({
           success: true,
 
@@ -864,13 +1745,67 @@ export async function POST(request: Request) {
 
           attendanceType: "check_in",
 
+          checkInStatus: result.checkInStatus,
+
+          lateMinutes: result.lateMinutes,
+
           employeeName: result.employeeName,
 
-          message: `${result.employeeName} berhasil absen masuk.`,
+          message,
         });
+      }
 
       // ======================================================
-      // ATTENDANCE CHECK OUT
+      // CHECKOUT BLOCKED
+      // ======================================================
+
+      case "check_out_too_early": {
+        let message =
+          "Anda sudah melakukan absen masuk. Belum masuk waktu absen pulang.";
+
+        if (result.reason === "before_checkout_window") {
+          message = `Anda sudah melakukan absen masuk. Check-out baru dapat dilakukan mulai pukul ${attendanceRules.checkOutOpen} WIB dan minimal ${formatDurationLong(
+            attendanceRules.minimumWorkDurationMinutes,
+          )} setelah check-in.`;
+        }
+
+        if (
+          result.reason === "minimum_duration" &&
+          result.remainingMinutes > 0
+        ) {
+          message = `Durasi kerja belum mencapai ${formatDurationLong(
+            attendanceRules.minimumWorkDurationMinutes,
+          )}. Check-out dapat dilakukan dalam ${formatDuration(
+            result.remainingMinutes,
+          )} lagi.`;
+        }
+
+        return NextResponse.json(
+          {
+            success: false,
+
+            code: "CHECK_OUT_TOO_EARLY",
+
+            mode: "attendance",
+
+            attendanceType: "check_out",
+
+            employeeName: result.employeeName,
+
+            reason: result.reason,
+
+            remainingMinutes: result.remainingMinutes,
+
+            message,
+          },
+          {
+            status: 409,
+          },
+        );
+      }
+
+      // ======================================================
+      // CHECKOUT SUCCESS
       // ======================================================
 
       case "attendance_check_out":
@@ -883,9 +1818,16 @@ export async function POST(request: Request) {
 
           attendanceType: "check_out",
 
+          checkOutStatus: result.checkOutStatus,
+
+          workDurationMinutes: result.workDurationMinutes,
+
           employeeName: result.employeeName,
 
-          message: `${result.employeeName} berhasil absen pulang.`,
+          message:
+            result.checkOutStatus === "early"
+              ? `${result.employeeName} berhasil absen pulang lebih awal.`
+              : `${result.employeeName} berhasil absen pulang.`,
         });
 
       // ======================================================
@@ -931,6 +1873,30 @@ export async function POST(request: Request) {
         );
 
       // ======================================================
+      // CARD INACTIVE
+      // ======================================================
+
+      case "card_inactive":
+        return NextResponse.json(
+          {
+            success: false,
+
+            code: "CARD_INACTIVE",
+
+            mode: "attendance",
+
+            employeeName: result.employeeName,
+
+            message: result.employeeName
+              ? `Kartu RFID milik ${result.employeeName} sedang nonaktif.`
+              : "Kartu RFID sedang nonaktif.",
+          },
+          {
+            status: 409,
+          },
+        );
+
+      // ======================================================
       // EMPLOYEE INACTIVE
       // ======================================================
 
@@ -969,6 +1935,10 @@ export async function POST(request: Request) {
             status: 404,
           },
         );
+
+      // ======================================================
+      // UNKNOWN
+      // ======================================================
 
       default:
         return NextResponse.json(

@@ -1,3 +1,4 @@
+import AuthGuard from "@/components/AuthGuard";
 import DashboardShell from "@/components/DashboardShell";
 
 export default function PanelLayout({
@@ -5,5 +6,9 @@ export default function PanelLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  return <DashboardShell>{children}</DashboardShell>;
+  return (
+    <AuthGuard>
+      <DashboardShell>{children}</DashboardShell>
+    </AuthGuard>
+  );
 }
