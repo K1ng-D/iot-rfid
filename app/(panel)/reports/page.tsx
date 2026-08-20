@@ -197,8 +197,6 @@ export default function ReportsPage() {
 
   const [loading, setLoading] = useState(true);
 
-  const [refreshing, setRefreshing] = useState(false);
-
   const [exporting, setExporting] = useState(false);
 
   const [loadError, setLoadError] = useState("");
@@ -209,16 +207,12 @@ export default function ReportsPage() {
   // LOAD
   // ==========================================================
 
-  const loadAttendance = useCallback(async (manualRefresh = false) => {
+  const loadAttendance = useCallback(async () => {
     if (requestRunningRef.current) {
       return;
     }
 
     requestRunningRef.current = true;
-
-    if (manualRefresh) {
-      setRefreshing(true);
-    }
 
     try {
       const response = await fetch("/api/attendance", {
@@ -254,7 +248,6 @@ export default function ReportsPage() {
       );
     } finally {
       setLoading(false);
-      setRefreshing(false);
 
       requestRunningRef.current = false;
     }
@@ -1004,16 +997,6 @@ export default function ReportsPage() {
         </div>
 
         <div className="flex flex-col gap-2 sm:flex-row">
-          <button
-            type="button"
-            disabled={refreshing}
-            onClick={() => void loadAttendance(true)}
-            className="inline-flex h-11 items-center justify-center gap-2 rounded-2xl border border-[#dce6f1] bg-white px-4 text-xs font-black text-[#64748b] transition hover:border-[#007BFF] hover:bg-[#eaf4ff] hover:text-[#007BFF] disabled:opacity-50"
-          >
-            <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
-            Refresh
-          </button>
-
           <button
             type="button"
             disabled={filteredRecords.length === 0 || exporting}

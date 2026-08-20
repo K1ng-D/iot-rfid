@@ -277,3 +277,28 @@ export interface AttendanceRecord {
 
   updatedAt: string | null;
 }
+
+// ============================================================
+// ATTENDANCE PERMISSION
+// ============================================================
+
+export type AttendancePermissionType = "absent" | "late";
+
+export interface AttendancePermission {
+  id: string;
+
+  employeeId: string;
+  employeeCode: string;
+  employeeName: string;
+  department: string;
+  position: string;
+
+  dateKey: string;
+
+  type: AttendancePermissionType;
+
+  reason: string;
+
+  createdAt: string | null;
+  updatedAt: string | null;
+}

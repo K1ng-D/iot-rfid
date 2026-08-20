@@ -1214,14 +1214,36 @@ export default function EmployeesPage() {
 
               {/* ACTION */}
 
+              {/* ACTION */}
+
               <div className="flex gap-3 pt-2">
+                {/* CANCEL */}
                 <button
                   type="button"
                   disabled={saving}
                   onClick={closeModal}
-                  className="h-12 flex-1 rounded-2xl border border-[#dce6f1] bg-white text-sm font-bold text-[#64748b] transition hover:bg-[#f7fafd] disabled:opacity-50"
+                  className="h-12 flex-1 rounded-2xl border border-[#dce6f1] bg-white text-sm font-bold text-[#64748b] transition hover:bg-[#f7fafd] disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Batal
+                </button>
+
+                {/* SAVE */}
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="flex h-12 flex-1 items-center justify-center gap-2 rounded-2xl bg-[#007BFF] text-sm font-bold text-white transition hover:bg-[#006ee6] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {saving ? (
+                    <>
+                      <span className="size-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                      Menyimpan...
+                    </>
+                  ) : (
+                    <>
+                        
+                      {editingEmployee ? "Simpan Perubahan" : "Simpan Karyawan"}
+                    </>
+                  )}
                 </button>
               </div>
             </form>

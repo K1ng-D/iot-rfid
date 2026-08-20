@@ -284,24 +284,6 @@ export default function DashboardShell({ children }: DashboardShellProps) {
         {/* =================================================== */}
 
         <div className="shrink-0 border-t border-[#274b6d] p-4">
-          <div className="rounded-[22px] border border-[#315372] bg-[#0a2948] p-4">
-            <div className="flex items-center gap-3">
-              <span className="relative flex size-3">
-                <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-60" />
-
-                <span className="relative inline-flex size-3 rounded-full bg-emerald-400" />
-              </span>
-
-              <div className="min-w-0">
-                <p className="text-xs font-bold text-white">System Running</p>
-
-                <p className="mt-0.5 truncate text-[11px] text-[#7f9fba]">
-                  RFID Attendance System
-                </p>
-              </div>
-            </div>
-          </div>
-
           <button
             type="button"
             onClick={handleLogout}
@@ -309,7 +291,7 @@ export default function DashboardShell({ children }: DashboardShellProps) {
           >
             <LogOut size={18} className="text-[#86a4bf]" />
 
-            <span>Keluar</span>
+            <span>Logout</span>
           </button>
         </div>
       </aside>
